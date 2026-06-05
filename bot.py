@@ -1,13 +1,9 @@
-from telegram.ext import Application
 import os
+from telegram.ext import Application
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 def main():
-    if not TOKEN:
-        print("BOT_TOKEN not found")
-        return
-
     app = Application.builder().token(TOKEN).build()
 
     print("TradeVision AI Bot Running...")
