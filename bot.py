@@ -1,24 +1,36 @@
 import os
+import random
 import asyncio
-from telegram.ext import Application
+from telegram import Bot
 
 TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID = os.getenv("GROUP_ID")
 
-async def main():
-    if not TOKEN:
-        print("BOT_TOKEN not found!")
-        return
+bot = Bot(token=TOKEN)
 
-    app = Application.builder().token(TOKEN).build()
+pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "BTC/USDT"]
 
-    print("TradeVision AI Bot Running...")
+def generate_signal():
+    pair = random.choice(pairs)
+    direction = random.choice(["CALL 📈", "PUT 📉"])
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    return f"""
+📡 TRADEVISION QUOTEX SIGNAL
+
+💱 Pair: {pair}
+📊 Direction: {direction}
+⏱ Timeframe: 1 MIN
+
+⚡ AI Auto Signal
+"""
+
+async def run_bot():
+    print("Bot Running...")
 
     while True:
+        msg = generate_signal()
+        await bot.send_message(chat_id=GROUP_ID, text=msg)
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_bot())
