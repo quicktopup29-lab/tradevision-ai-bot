@@ -189,22 +189,28 @@ async def main():
                 signal = generate_signal(pair)
 
                 if signal:
-                    try:
-                        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
-                        print(f"✅ SENT: {pair}")
+    try:
+        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
+        print(f"✅ SENT: {pair}")
 
-                    except Exception as e:
-                        print("❌ Telegram Error:", e)
+        # শুধু signal গেলে pause দাও (smart delay)
+        await asyncio.sleep(5)
 
-                await asyncio.sleep(3)
+    except Exception as e:
+        print("❌ Telegram Error:", e)
 
-            print("⏳ Cycle complete, waiting 60s...\n")
-            await asyncio.sleep(60)
+else:
+    print(f"⚠️ No signal: {pair}")
 
-        except Exception as e:
-            print("🔥 MAIN LOOP CRASH PREVENTED:", e)
-            await asyncio.sleep(10)
+# normal delay between pairs
+await asyncio.sleep(3)
 
+print("⏳ Cycle complete, waiting 60s...\n")
+await asyncio.sleep(60)
+
+except Exception as e:
+    print("🔥 MAIN LOOP CRASH PREVENTED:", e)
+    await asyncio.sleep(10)
 # ================= RUN =================
 if __name__ == "__main__":
     asyncio.run(main())
