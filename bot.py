@@ -19,28 +19,29 @@ def get_market_data(symbol="EURUSD"):
     url = "https://www.alphavantage.co/query"
 
     params = {
-        "function": "FX_INTRADAY",
-        "from_symbol": symbol[:3],
-        "to_symbol": symbol[3:],
-        "interval": "1min",
-        "outputsize": "compact",
-        "apikey": API_KEY
-    }
+    "function": "FX_INTRADAY",
+    "from_symbol": symbol[:3],
+    "to_symbol": symbol[3:],
+    "interval": "1min",
+    "outputsize": "compact",
+    "apikey": API_KEY
+}
 
 try:
     response = requests.get(url, params=params)
 
     print("STATUS =", response.status_code)
-    print("RESPONSE =", response.json())
 
     if response.status_code != 200:
         return None
 
     data = response.json()
 
+    print("RESPONSE =", data)
+
     if "Time Series FX (1min)" not in data:
         if "Note" in data:
-            print(f"📢 API Note: {data['Note']}")
+            print("API LIMIT:", data["Note"])
         return None
 
     ts = data["Time Series FX (1min)"]
