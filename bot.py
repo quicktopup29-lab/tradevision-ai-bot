@@ -36,7 +36,7 @@ def get_market_data(symbol="EURUSD"):
             return None
 
         data = response.json()
-
+    print("RESPONSE =", data)
         if "Time Series FX (1min)" not in data:
             if "Note" in data:
                 print("API LIMIT:", data["Note"])
