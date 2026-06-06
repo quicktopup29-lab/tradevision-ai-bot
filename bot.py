@@ -89,7 +89,7 @@ def ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 
-# ================= AI SIGNAL ENGINE (YOUR STYLE) =================
+# # ================= AI SIGNAL ENGINE (MORE SIGNALS MODE) =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
@@ -109,37 +109,64 @@ def generate_signal(symbol):
         if pd.isna(rsi_val) or pd.isna(price):
             return None
 
-        trend_up = ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]
-        trend_down = ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]
+        # ট্রেন্ড কন্ডিশন একটু সহজ করা হলো
+        trend_up = ema9.iloc[-1] > ema21.iloc[-1]
+        trend_down = ema9.iloc[-1] < ema21.iloc[-1]
 
         score = 0
 
         if trend_up:
-            score += 40
+            score += 35
         if trend_down:
-            score -= 40
+            score -= 35
 
-        if rsi_val < 30:
-            score += 20
-        elif rsi_val > 70:
-            score -= 20
+        # RSI ফিল্টার একটু লুজ করা হলো যেন দ্রুত সিগন্যাল ধরে
+        if rsi_val < 40:  # আগে ৩০ ছিল
+            score += 25
+        elif rsi_val > 60:  # আগে ৭০ ছিল
+            score -= 25
         else:
             score += 10
 
-        volatility = close.pct_change().rolling(10).std().iloc[-1]
-
-        if not pd.isna(volatility) and volatility < 0.002:
-            score -= 10
-
         signal = None
 
-        if score >= 50:
+        # স্কোর টার্গেট ৫০ থেকে কমিয়ে ৩০ করা হলো (তাড়াতাড়ি সিগন্যাল পাওয়ার জন্য)
+        if score >= 30:
             signal = "BUY"
-        elif score <= -50:
+        elif score <= -30:
             signal = "SELL"
 
         if not signal:
             return None
+
+        confidence = min(95, max(60, abs(score)))
+        entry_time = datetime.now(bd_tz).strftime("%H:%M")
+
+        direction_text = (
+            "📈 Direction: BUY" if signal == "BUY" else "📉 Direction: SELL"
+        )
+
+        return f"""🔥 TRADEVISION AI VIP SIGNAL 🔥
+
+━━━━━━━━━━━━━━━
+
+💱 Pair: {symbol}
+{direction_text}
+
+⏰ Entry Time (BD 🇧🇩): {entry_time}
+⌛ Expiry: 1 Minute
+
+⚡ Confidence: {confidence:.0f}%
+
+━━━━━━━━━━━━━━━
+
+🚀 STATUS: ACTIVE
+🤖 Powered by TradeVision AI"""
+
+    except Exception as e:
+        print("❌ Signal Error:", e)
+        return None
+
 
         confidence = min(95, max(60, abs(score)))
         entry_time = datetime.now(bd_tz).strftime("%H:%M")
