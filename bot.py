@@ -19,60 +19,48 @@ def get_market_data(symbol="EURUSD"):
     url = "https://www.alphavantage.co/query"
 
     params = {
-    "function": "FX_INTRADAY",
-    "from_symbol": symbol[:3],
-    "to_symbol": symbol[3:],
-    "interval": "1min",
-    "outputsize": "compact",
-    "apikey": API_KEY
-}
+        "function": "FX_INTRADAY",
+        "from_symbol": symbol[:3],
+        "to_symbol": symbol[3:],
+        "interval": "1min",
+        "outputsize": "compact",
+        "apikey": API_KEY
+    }
 
-try:
-    response = requests.get(url, params=params)
+    try:
+        response = requests.get(url, params=params)
 
-    print("STATUS =", response.status_code)
+        print("STATUS =", response.status_code)
 
-    if response.status_code != 200:
-        return None
+        if response.status_code != 200:
+            return None
 
-    data = response.json()
+        data = response.json()
 
-    print("RESPONSE =", data)
+        if "Time Series FX (1min)" not in data:
+            if "Note" in data:
+                print("API LIMIT:", data["Note"])
+            return None
 
-    if "Time Series FX (1min)" not in data:
-        if "Note" in data:
-            print("API LIMIT:", data["Note"])
-        return None
+        ts = data["Time Series FX (1min)"]
 
-    ts = data["Time Series FX (1min)"]
+        rows = []
 
-    rows = []
+        for time_key, values in ts.items():
+            rows.append({
+                "timestamp": time_key,
+                "close": float(values["4. close"])
+            })
 
-    for time_key, values in ts.items():
-        rows.append({
-            "timestamp": time_key,
-            "close": float(values["4. close"])
-        })
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values("timestamp")
-    df = df.reset_index(drop=True)
-
-    return df
-
-except Exception as e:
-    print(f"❌ Error fetching data for {symbol}: {e}")
-    return None
         df = pd.DataFrame(rows)
         df = df.sort_values("timestamp")
         df = df.reset_index(drop=True)
 
         return df
-        
+
     except Exception as e:
         print(f"❌ Error fetching data for {symbol}: {e}")
         return None
-
 # ২. RSI/EMA/MACD গণনার লজিক এবং বাজার পরিস্থিতি विश्लेषण
 def analyze_indicators(df):
     # আপনার দেওয়া নতুন কন্ডিশন: পর্যাপ্ত ডেটা না থাকলে None ব্যাক করবে
