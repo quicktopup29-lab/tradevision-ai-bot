@@ -1,105 +1,138 @@
 import asyncio
-import os
-import pandas as pd
 import requests
+import pandas as pd
+from datetime import datetime
+import pytz
 from telegram import Bot
 
-# ১. CHANNEL_ID এবং অন্যান্য ক্রেডেনশিয়াল ডিফাইন করা (Environment Variables থেকে)
-API_KEY = os.getenv("TWELVE_DATA_API_KEY", "c1ec4ef642224321b031cf3068178289")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "YOUR_CHANNEL_ID_HERE")
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+# ================= CONFIG =================
+API_KEY = "c1ec4ef642224321b031cf3068178289"
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
+CHANNEL_ID = "YOUR_CHANNEL_ID"
 
-# ২. bot ডিফাইন করা (main() এর আগে অবশ্যই থাকতে হবে)
-bot = Bot(token=TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN)
+
+# ================= TIMEZONE (BD GMT+6) =================
+bd_tz = pytz.timezone("Asia/Dhaka")
 
 
-# ৩. get_market_data() ফাংশন (যা generate_signal এর ভেতরে কল করা হচ্ছে)
+# ================= MARKET DATA =================
 def get_market_data(symbol="EUR/USD"):
     try:
         url = "https://api.twelvedata.com/time_series"
+
         params = {
             "symbol": symbol,
             "interval": "1min",
-            "outputsize": 50,
-            "apikey": API_KEY,
+            "outputsize": 120,
+            "apikey": API_KEY
         }
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        r = requests.get(url, params=params)
+        data = r.json()
 
         if "values" not in data:
-            print(f"❌ API ERROR for {symbol}: {data}")
             return None
 
         df = pd.DataFrame(data["values"])
+        df = df.astype({"close": float})
 
-        # ডাটা টাইপ কনভার্ট করা
-        df["close"] = df["close"].astype(float)
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
+        return df[::-1]
 
-        return df[::-1]  # ওল্ডেস্ট থেকে নিউয়েস্ট ক্রোনোলজিক্যাল অর্ডার
-
-    except Exception as e:
-        print(f"❌ Exception in get_market_data for {symbol}: {e}")
+    except:
         return None
 
 
+# ================= RSI =================
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+
+# ================= SIGNAL ENGINE =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
-    if df is None or len(df) < 2:
+    if df is None or len(df) < 50:
         return None
 
-    current = df["close"].iloc[-1]
-    previous = df["close"].iloc[-2]
+    close = df["close"]
 
-    signal = "BUY" if current > previous else "SELL"
+    ema9 = close.ewm(span=9).mean()
+    ema21 = close.ewm(span=21).mean()
+    ema50 = close.ewm(span=50).mean()
 
-    # current time (entry time)
-    from datetime import datetime
-    entry_time = datetime.now().strftime("%H:%M")
+    rsi_val = rsi(close).iloc[-1]
+    price = close.iloc[-1]
 
-    expiry = "1 Minute"
+    trend_up = ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]
+    trend_down = ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]
+
+    signal = None
+    confidence = 50
+
+    # ===== SMART LOGIC =====
+    if trend_up and 40 < rsi_val < 70:
+        signal = "BUY"
+        confidence = 85 + (70 - rsi_val) * 0.3
+
+    elif trend_down and 30 < rsi_val < 60:
+        signal = "SELL"
+        confidence = 85 + (rsi_val - 30) * 0.3
+
+    if not signal:
+        return None
+
+    entry_time = datetime.now(bd_tz).strftime("%H:%M")
 
     return f"""
-🔥 TRADEVISION VIP SIGNAL
+🔥 TRADEVISION ULTIMATE AI SIGNAL
 
 💱 Pair: {symbol}
 📉 Signal: {signal}
 
-⏰ Entry Time: {entry_time}
-⏰ Expiry: {expiry}
+⏰ Entry Time (BD 🇧🇩): {entry_time}
+⏳ Expiry: 1 Minute
+
+📊 Price: {price:.5f}
+📈 RSI: {rsi_val:.2f}
+⚡ Confidence: {confidence:.1f}%
+
+🇧🇩 Timezone: GMT+6 (Bangladesh)
+
+🚀 ULTIMATE AI SYSTEM
 """
 
 
+# ================= MAIN LOOP =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 Bot Started successfully...")
+    print("🚀 ULTIMATE TRADEVISION BOT STARTED...")
 
     while True:
-        # আপনার ফ্লো চার্ট অনুযায়ী লুপ কাজ করবে
         for pair in pairs:
-            print(f"🔍 Checking {pair}...")
+            print(f"🔍 Analyzing {pair}...")
+
             signal = generate_signal(pair)
 
             if signal:
                 try:
                     await bot.send_message(chat_id=CHANNEL_ID, text=signal)
-                    print(f"✅ Signal Sent: {pair}")
+                    print(f"✅ SENT: {pair}")
+
                 except Exception as e:
-                    print(f"❌ Failed to send signal for {pair}: {e}")
+                    print("❌ ERROR:", e)
 
-            # এপিআই রেট লিমিট বা স্প্যামিং এড়াতে প্রতি পেয়ারের মাঝে ছোট বিরতি
-            await asyncio.sleep(2)
+            await asyncio.sleep(7)
 
-        # আপনার দেওয়া ফ্লো অনুযায়ী সব জোড়া চেক শেষে ৬০ সেকেন্ডের বিরতি এবং Repeat
-        print("⏳ All pairs checked. Waiting 60 seconds before next round...\n")
+        print("⏳ Next cycle in 60 seconds...")
         await asyncio.sleep(60)
 
 
-# নিচে এই এন্ট্রি পয়েন্টটি থাকা বাধ্যতামূলক ছিল, যা যুক্ত করা হয়েছে:
 if __name__ == "__main__":
     asyncio.run(main())
