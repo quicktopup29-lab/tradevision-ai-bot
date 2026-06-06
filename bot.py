@@ -34,7 +34,12 @@ def get_market_data(symbol="EURUSD"):
 
         if response.status_code != 200:
             return None
+print("API KEY =", API_KEY)
 
+response = requests.get(url, params=params)
+
+print("STATUS =", response.status_code)
+print("TEXT =", response.text[:500])
         data = response.json()
      print(data)
         if "Time Series FX (1min)" not in data:
