@@ -7,8 +7,8 @@ import requests
 from telegram import Bot
 
 # ================= CONFIG (সরাসরি আপনার ডাটা বসান) =================
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHANNEL_ID = "YOUR_TELEGRAM_CHANNEL_ID"
+TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
+CHANNEL_ID = "@tradevision_ai_signals"
 API_KEY = "c1ec4ef642224321b031cf3068178289"
 
 bot = Bot(token=TOKEN)
