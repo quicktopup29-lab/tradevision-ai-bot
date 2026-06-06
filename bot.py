@@ -158,6 +158,15 @@ async def main():
         print("Error: TELEGRAM_BOT_TOKEN বা TELEGRAM_CHANNEL_ID পাওয়া যায়নি!")
         return
     bot = Bot(token=TOKEN)
+
+await bot.send_message(
+
+    chat_id=CHANNEL_ID,
+
+    text="✅ TradeVision Bot Online"
+
+)
+
     print("Auto-posting bot is running...")
     
     while True:
@@ -172,7 +181,7 @@ async def main():
             await send_automatic_update(bot, symbol=symbol)
             await asyncio.sleep(2) # পেয়ারগুলোর মাঝে ২ সেকেন্ডের গ্যাপ
             
-        print("😴 পরবর্তী আপডেটের জন্য ১ ঘণ্টা অপেক্ষা করা হচ্ছে...")
+        print("TEST MESSAGE SENT")
         await asyncio.sleep(3600) # ১ ঘণ্টা পর পর লুপ চলবে
 
 if __name__ == "__main__":
