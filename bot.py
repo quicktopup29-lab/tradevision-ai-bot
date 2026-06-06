@@ -7,7 +7,7 @@ import pytz
 from telegram import Bot
 
 # ================= CONFIG =================
-API_KEY = "YOUR_TWELVEDATA_API_KEY"
+API_KEY = "c1ec4ef642224321b031cf3068178289"
 TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
 CHANNEL_ID = "YOUR_CHANNEL_ID"
 
