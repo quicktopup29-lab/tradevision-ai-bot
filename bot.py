@@ -27,13 +27,16 @@ def get_market_data(symbol="EURUSD"):
         "apikey": API_KEY
     }
 
-    try:
-        response = requests.get(url, params=params)
+try:
+    response = requests.get(url, params=params)
 
-        if response.status_code != 200:
-            return None
+    print("STATUS =", response.status_code)
+    print("RESPONSE =", response.json())
 
-        data = response.json()
+    if response.status_code != 200:
+        return None
+
+    data = response.json()
 
         if "Time Series FX (1min)" not in data:
             if "Note" in data:
@@ -143,10 +146,11 @@ async def send_automatic_update(bot: Bot, symbol="EURUSD"):
 
 # ৪. মেইন ফাংশন
 async def main():
+    print("API KEY =", API_KEY)
+
     if not TOKEN or not CHANNEL_ID:
         print("Error: TELEGRAM_BOT_TOKEN বা TELEGRAM_CHANNEL_ID পাওয়া যায়নি!")
         return
-
     bot = Bot(token=TOKEN)
     print("Auto-posting bot is running...")
     
