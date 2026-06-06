@@ -26,13 +26,19 @@ async def main():
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text="""
-🚀 TradeVision AI Bot Online
+🔥 TRADEVISION VIP SIGNAL
 
-✅ Bot Running Successfully
-📡 Railway Connected
-🤖 Auto Message Test
+💱 Pair: EUR/USD
+📈 Signal: BUY
 
-Time: Every 5 Minutes
+🎯 Entry: 1.14520
+🎯 TP1: 1.14600
+🎯 TP2: 1.14700
+🛑 SL: 1.14420
+
+⏰ Expiry: 5 Minutes
+
+⚡ Confidence: 87%
 """
             )
 
