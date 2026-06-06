@@ -1,10 +1,24 @@
 import os
 import asyncio
+import requests
+import pandas as pd
 from telegram import Bot
 from dotenv import load_dotenv
 
 load_dotenv()
 
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+API_KEY = os.getenv("FOREX_API_KEY")
+
+PAIRS = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD"
+]
+
+bot = Bot(token=TOKEN)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 import requests
