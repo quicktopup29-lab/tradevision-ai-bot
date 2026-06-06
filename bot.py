@@ -1,105 +1,78 @@
-import os
-import asyncio
 import requests
 import pandas as pd
-from telegram import Bot
-from dotenv import load_dotenv
 
-load_dotenv()
+API_KEY = "c1ec4ef642224321b031cf3068178289"
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-API_KEY = os.getenv("FOREX_API_KEY")
-
-PAIRS = [
-    "EUR/USD",
-    "GBP/USD",
-    "USD/JPY",
-    "AUD/USD"
-]
-
-bot = Bot(token=TOKEN)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-import requests
-
-# replace the "demo" apikey below with your own key from https://www.alphavantage.co/support/#api-key
-url = 'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=demo'
-r = requests.get(url)
-data = r.json()
-
-print(data)
-# API key: QD90GKKPG2JJG7DC
-API_KEY = "QD90GKKPG2JJG7DC"
-def get_market_data(symbol="EURUSD"):
-    print(f"Fetching {symbol}...")
-
+def get_market_data(symbol="EUR/USD"):
     try:
-        url = "https://api.exchangerate.host/live"
+        url = "https://api.twelvedata.com/time_series"
+
         params = {
-            "access_key": API_KEY,
-            "source": symbol[:3],
-            "currencies": symbol[3:]
+            "symbol": symbol,
+            "interval": "1min",
+            "outputsize": 100,
+            "apikey": API_KEY
         }
 
         response = requests.get(url, params=params)
         data = response.json()
 
-        print(data)
-
-        if "quotes" not in data:
+        if "values" not in data:
+            print("No Data:", data)
             return None
 
-        price = list(data["quotes"].values())[0]
+        df = pd.DataFrame(data["values"])
 
-        df = pd.DataFrame({
-            "close": [price] * 50
-        })
+        df["close"] = df["close"].astype(float)
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
 
-        return df
+        return df[::-1]
 
     except Exception as e:
-        print(e)
+        print("ERROR:", e)
         return None
-async def main():
-    if not TOKEN:
-        print("❌ TELEGRAM_BOT_TOKEN NOT FOUND")
-        return
+        PAIRS = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD"
+]
+def generate_signal(df):
 
-    if not CHANNEL_ID:
-        print("❌ TELEGRAM_CHANNEL_ID NOT FOUND")
-        return
+    current = df["close"].iloc[-1]
+    previous = df["close"].iloc[-2]
 
-    bot = Bot(token=TOKEN)
+    if current > previous:
+        signal = "BUY"
+    else:
+        signal = "SELL"
 
-    print("✅ Bot Started Successfully")
+    return signal, current
+    for pair in PAIRS:
 
-    while True:
-        try:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text="""
+    df = get_market_data(pair)
+
+    if df is None:
+        continue
+
+    signal, price = generate_signal(df)
+
+    message = f"""
 🔥 TRADEVISION VIP SIGNAL
 
-💱 Pair: EUR/USD
-📈 Signal: BUY
+💱 Pair: {pair}
+📈 Signal: {signal}
 
-🎯 Entry: 1.14520
-🎯 TP1: 1.14600
-🎯 TP2: 1.14700
-🛑 SL: 1.14420
-
+🎯 Entry: {price:.5f}
 ⏰ Expiry: 5 Minutes
 
-⚡ Confidence: 87%
+⚡ Confidence: 80%
 """
-            )
-            print("✅ Message Sent Successfully")
 
-        except Exception as e:
-            print(f"❌ ERROR: {e}")
-
-        await asyncio.sleep(300)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=message
+    )
+    
