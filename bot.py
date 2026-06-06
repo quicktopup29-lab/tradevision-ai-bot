@@ -6,14 +6,19 @@ import pytz
 from telegram import Bot
 
 # ================= CONFIG =================
-API_KEY = "c1ec4ef642224321b031cf3068178289"
+API_KEY = "YOUR_TWELVEDATA_API_KEY"
 TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
 CHANNEL_ID = "YOUR_CHANNEL_ID"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ================= TIMEZONE (BD GMT+6) =================
+# ================= TIMEZONE =================
 bd_tz = pytz.timezone("Asia/Dhaka")
+
+
+# ================= SYMBOL FIX =================
+def fix_symbol(symbol):
+    return symbol.replace("/", "")
 
 
 # ================= MARKET DATA =================
@@ -21,17 +26,20 @@ def get_market_data(symbol="EUR/USD"):
     try:
         url = "https://api.twelvedata.com/time_series"
 
+        clean_symbol = fix_symbol(symbol)
+
         params = {
-            "symbol": symbol,
+            "symbol": clean_symbol,
             "interval": "1min",
             "outputsize": 120,
             "apikey": API_KEY
         }
 
-        r = requests.get(url, params=params)
-        data = r.json()
+        response = requests.get(url, params=params)
+        data = response.json()
 
         if "values" not in data:
+            print("❌ API ERROR:", data)
             return None
 
         df = pd.DataFrame(data["values"])
@@ -39,13 +47,15 @@ def get_market_data(symbol="EUR/USD"):
 
         return df[::-1]
 
-    except:
+    except Exception as e:
+        print("❌ ERROR:", e)
         return None
 
 
 # ================= RSI =================
 def rsi(series, period=14):
     delta = series.diff()
+
     gain = delta.where(delta > 0, 0).rolling(period).mean()
     loss = -delta.where(delta < 0, 0).rolling(period).mean()
 
@@ -75,14 +85,14 @@ def generate_signal(symbol):
     signal = None
     confidence = 50
 
-    # ===== SMART LOGIC =====
-    if trend_up and 40 < rsi_val < 70:
+    # ===== PRO LOGIC =====
+    if trend_up and rsi_val < 70:
         signal = "BUY"
-        confidence = 85 + (70 - rsi_val) * 0.3
+        confidence = 80 + (70 - rsi_val) * 0.5
 
-    elif trend_down and 30 < rsi_val < 60:
+    elif trend_down and rsi_val > 30:
         signal = "SELL"
-        confidence = 85 + (rsi_val - 30) * 0.3
+        confidence = 80 + (rsi_val - 30) * 0.5
 
     if not signal:
         return None
@@ -90,21 +100,19 @@ def generate_signal(symbol):
     entry_time = datetime.now(bd_tz).strftime("%H:%M")
 
     return f"""
-🔥 TRADEVISION ULTIMATE AI SIGNAL
+🔥 PRO TRADING ENGINE SIGNAL
 
 💱 Pair: {symbol}
-📉 Signal: {signal}
+📊 Signal: {signal}
 
 ⏰ Entry Time (BD 🇧🇩): {entry_time}
 ⏳ Expiry: 1 Minute
 
-📊 Price: {price:.5f}
+💰 Price: {price:.5f}
 📈 RSI: {rsi_val:.2f}
 ⚡ Confidence: {confidence:.1f}%
 
-🇧🇩 Timezone: GMT+6 (Bangladesh)
-
-🚀 ULTIMATE AI SYSTEM
+🚀 STATUS: LIVE MARKET ANALYSIS
 """
 
 
@@ -112,25 +120,28 @@ def generate_signal(symbol):
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 ULTIMATE TRADEVISION BOT STARTED...")
+    print("🚀 PRO TRADING ENGINE STARTED...")
 
     while True:
         for pair in pairs:
-            print(f"🔍 Analyzing {pair}...")
+            print(f"🔍 Scanning {pair}...")
 
             signal = generate_signal(pair)
 
             if signal:
                 try:
-                    await bot.send_message(chat_id=CHANNEL_ID, text=signal)
-                    print(f"✅ SENT: {pair}")
+                    await bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=signal
+                    )
+                    print(f"✅ SENT SIGNAL: {pair}")
 
                 except Exception as e:
-                    print("❌ ERROR:", e)
+                    print("❌ TELEGRAM ERROR:", e)
 
-            await asyncio.sleep(7)
+            await asyncio.sleep(5)
 
-        print("⏳ Next cycle in 60 seconds...")
+        print("⏳ Waiting next 1-minute cycle...")
         await asyncio.sleep(60)
 
 
