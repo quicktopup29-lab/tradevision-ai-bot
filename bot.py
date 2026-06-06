@@ -7,19 +7,13 @@ import requests
 from telegram import Bot
 
 # ================= CONFIG (সরাসরি আপনার ডাটা বসান) =================
-# এখানে আপনার আসল বট টোকেন এবং চ্যানেল আইডি বসান (সবচেয়ে নিরাপদ উপায়)
-TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
-CHANNEL_ID = "@tradevision_ai_signals"
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHANNEL_ID = "YOUR_TELEGRAM_CHANNEL_ID"
 API_KEY = "c1ec4ef642224321b031cf3068178289"
 
 bot = Bot(token=TOKEN)
 
 bd_tz = pytz.timezone("Asia/Dhaka")
-
-
-# ================= SAFE SYMBOL =================
-def fix_symbol(symbol):
-    return symbol.replace("/", "")
 
 
 # ================= SAFE API CALL =================
@@ -28,6 +22,7 @@ def safe_api_call(url, params):
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
 
+        # এপিআই লিমিট বা ইনভ্যালিড রেসপন্স চেক
         if (
             data.get("code") == 429
             or data.get("status") == "error"
@@ -43,13 +38,14 @@ def safe_api_call(url, params):
         return None
 
 
-# ================= MARKET DATA =================
+# ================= MARKET DATA (FIXED) =================
 def get_market_data(symbol):
     try:
         url = "https://api.twelvedata.com/time_series"
 
+        # এখানে 'symbol' সরাসরি পাস করা হচ্ছে (কোনো স্ল্যাশ কাটা হবে না)
         params = {
-            "symbol": fix_symbol(symbol),
+            "symbol": symbol,  # হুবহু "EUR/USD" বা "GBP/USD" যাবে
             "interval": "1min",
             "outputsize": 80,
             "apikey": API_KEY,
@@ -95,7 +91,7 @@ def ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 
-# ================= AI SIGNAL ENGINE (NEW FORMAT) =================
+# ================= AI SIGNAL ENGINE =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
@@ -154,7 +150,6 @@ def generate_signal(symbol):
         tp2 = price * (1.0020 if signal == "BUY" else 0.9980)
         sl = price * (0.9990 if signal == "BUY" else 1.0010)
 
-        # আপনার দেওয়া নতুন ভিআইপি মেসেজ ফরম্যাট
         direction_text = (
             "📈 Direction: BUY" if signal == "BUY" else "📉 Direction: SELL"
         )
@@ -185,8 +180,9 @@ def generate_signal(symbol):
         return None
 
 
-# ================= MAIN LOOP (YOUR STRUCTURE) =================
+# ================= MAIN LOOP =================
 async def main():
+    # Twelve Data-র জন্য স্ল্যাশসহ নামই পারফেক্ট
     pairs = ["EUR/USD", "GBP/USD"]
 
     print("🚀 TRADEVISION PRO STARTED...")
@@ -207,7 +203,6 @@ async def main():
                 else:
                     print(f"⚠️ No Signal: {pair}")
 
-                # রেট লিমিট এড়াতে জোড়াগুলোর মাঝে ১৫ সেকেন্ড বিরতি
                 await asyncio.sleep(15)
 
             print("⏳ Waiting for next candle...\n")
