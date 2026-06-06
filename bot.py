@@ -1,18 +1,18 @@
 import asyncio
 from datetime import datetime
 import os
-import time
 import pandas as pd
 import pytz
 import requests
 from telegram import Bot
 
-# ================= CONFIG =================
-API_KEY = "c1ec4ef642224321b031cf3068178289"
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
-CHANNEL_ID = "YOUR_CHANNEL_ID"
+# ================= CONFIG (Railway Variables) =================
+# Railway ড্যাশবোর্ডের নামের সাথে হুবহু মিল রেখে সেট করা হলো
+TOKEN = os.getenv("TELEGRAM_BOT_TOKE")  # ড্যাশবোর্ডে 'N' বাদ পড়েছে
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_")  # ড্যাশবোর্ডে শেষে '_' আছে
+API_KEY = os.getenv("API_KEY", "c1ec4ef642224321b031cf3068178289")
 
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TOKEN)
 
 bd_tz = pytz.timezone("Asia/Dhaka")
 
@@ -22,21 +22,25 @@ def fix_symbol(symbol):
     return symbol.replace("/", "")
 
 
-# ================= SAFE API CALL (UPDATED) =================
+# ================= SAFE API CALL =================
 def safe_api_call(url, params):
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=15)
         data = r.json()
 
-        # এপিআই রেট লিমিট হ্যান্ডেল করার জন্য পরিবর্তন
-        if data.get("code") == 429:
-            print("⛔ API LIMIT REACHED")
+        # Twelve Data API লিমিট বা যেকোনো এরর চেক করার সঠিক নিয়ম
+        if (
+            data.get("code") == 429
+            or data.get("status") == "error"
+            or "values" not in data
+        ):
+            print(f"⛔ API LIMIT OR ERROR: {data.get('message', 'Rate Limit')}")
             return None
 
         return data
 
     except Exception as e:
-        print(f"⚠️ API Error: {e}")
+        print(f"⚠️ API Connection Error: {e}")
         return None
 
 
@@ -45,16 +49,17 @@ def get_market_data(symbol):
     try:
         url = "https://api.twelvedata.com/time_series"
 
+        # ফ্রি প্ল্যানের জন্য রিকোয়েস্ট সাইজ ১২০ থেকে কমিয়ে ৮০ করা হলো (সেফ সাইড)
         params = {
             "symbol": fix_symbol(symbol),
             "interval": "1min",
-            "outputsize": 120,
+            "outputsize": 80,
             "apikey": API_KEY,
         }
 
         data = safe_api_call(url, params)
 
-        if not data or "values" not in data:
+        if not data:
             return None
 
         df = pd.DataFrame(data["values"])
@@ -65,7 +70,7 @@ def get_market_data(symbol):
 
         df = df.dropna()
 
-        if len(df) < 50:
+        if len(df) < 55:  # EMA 50 এর জন্য অন্তত ৫৫টি ক্যান্ডেল দরকার
             return None
 
         return df[::-1]
@@ -83,10 +88,8 @@ def rsi(series, period=14):
         loss = -delta.where(delta < 0, 0).rolling(period).mean()
 
         rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-
-        return rsi
-
+        rsi_val = 100 - (100 / (1 + rs))
+        return rsi_val
     except:
         return pd.Series([50] * len(series))
 
@@ -148,7 +151,6 @@ def generate_signal(symbol):
             return None
 
         confidence = min(95, max(60, abs(score)))
-
         entry_time = datetime.now(bd_tz).strftime("%H:%M")
 
         tp1 = price * (1.0010 if signal == "BUY" else 0.9990)
@@ -181,11 +183,9 @@ def generate_signal(symbol):
         return None
 
 
-# ================= MAIN LOOP (CRASH SAFE) =================
+# ================= MAIN LOOP =================
 async def main():
-    # ফ্রি প্ল্যানের জন্য শুধুমাত্র ২টি পেয়ার রাখা হলো
     pairs = ["EUR/USD", "GBP/USD"]
-
     print("🚀 CRASH PROOF ENGINE STARTED...")
 
     while True:
@@ -205,10 +205,9 @@ async def main():
                 else:
                     print(f"⚠️ No signal: {pair}")
 
-                # প্রতিটি পেয়ার চেকের মাঝে বিরতি বাড়িয়ে ১৫ সেকেন্ড করা হলো
+                # রেট লিমিট এড়াতে দুই পেয়ারের মাঝে ১৫ সেকেন্ড বিরতি
                 await asyncio.sleep(15)
 
-            # পুরো সাইকেল শেষে ৬০ সেকেন্ডের বিরতি
             print("⏳ Cycle complete, waiting 60s...\n")
             await asyncio.sleep(60)
 
