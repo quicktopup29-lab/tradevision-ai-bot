@@ -12,7 +12,7 @@ load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID") 
-API_KEY = os.getenv("ALPHA_API_KEY") 
+API_KEY = os.getenv("FOREX_API_KEY")
 
 # ১. মার্কেট ডেটা সংগ্রহের ফাংশন
 def get_market_data(symbol="EURUSD"):
