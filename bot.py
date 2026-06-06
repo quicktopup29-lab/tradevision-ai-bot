@@ -22,23 +22,22 @@ def fix_symbol(symbol):
     return symbol.replace("/", "")
 
 
-# ================= SAFE API CALL =================
-def safe_api_call(url, params, retries=3):
-    for i in range(retries):
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            data = r.json()
+# ================= SAFE API CALL (UPDATED) =================
+def safe_api_call(url, params):
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
 
-            if "values" in data:
-                return data
+        # এপিআই রেট লিমিট হ্যান্ডেল করার জন্য পরিবর্তন
+        if data.get("code") == 429:
+            print("⛔ API LIMIT REACHED")
+            return None
 
-            print("⚠️ API Warning:", data)
+        return data
 
-        except Exception as e:
-            print(f"⚠️ API Retry {i+1}: {e}")
-            time.sleep(2)
-
-    return None
+    except Exception as e:
+        print(f"⚠️ API Error: {e}")
+        return None
 
 
 # ================= MARKET DATA =================
@@ -55,7 +54,7 @@ def get_market_data(symbol):
 
         data = safe_api_call(url, params)
 
-        if not data:
+        if not data or "values" not in data:
             return None
 
         df = pd.DataFrame(data["values"])
@@ -113,7 +112,6 @@ def generate_signal(symbol):
         rsi_val = rsi(close).iloc[-1]
         price = close.iloc[-1]
 
-        # SAFE CHECK
         if pd.isna(rsi_val) or pd.isna(price):
             return None
 
@@ -185,7 +183,8 @@ def generate_signal(symbol):
 
 # ================= MAIN LOOP (CRASH SAFE) =================
 async def main():
-    pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
+    # ফ্রি প্ল্যানের জন্য শুধুমাত্র ২টি পেয়ার রাখা হলো
+    pairs = ["EUR/USD", "GBP/USD"]
 
     print("🚀 CRASH PROOF ENGINE STARTED...")
 
@@ -200,16 +199,16 @@ async def main():
                     try:
                         await bot.send_message(chat_id=CHANNEL_ID, text=signal)
                         print(f"✅ SENT: {pair}")
-                        # প্রতিবার সিগন্যাল পাঠানোর পর ৫ সেকেন্ড বিরতি (টেলিগ্রাম লিমিট এড়াতে)
                         await asyncio.sleep(5)
                     except Exception as e:
                         print("❌ Telegram Error:", e)
                 else:
                     print(f"⚠️ No signal: {pair}")
 
-                # প্রতিটি পেয়ার চেকের মাঝে ৩ সেকেন্ড বিরতি
-                await asyncio.sleep(3)
+                # প্রতিটি পেয়ার চেকের মাঝে বিরতি বাড়িয়ে ১৫ সেকেন্ড করা হলো
+                await asyncio.sleep(15)
 
+            # পুরো সাইকেল শেষে ৬০ সেকেন্ডের বিরতি
             print("⏳ Cycle complete, waiting 60s...\n")
             await asyncio.sleep(60)
 
