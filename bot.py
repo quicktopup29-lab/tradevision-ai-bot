@@ -15,7 +15,7 @@ r = requests.get(url)
 data = r.json()
 
 print(data)
-API key: QD90GKKPG2JJG7DC
+# API key: QD90GKKPG2JJG7DC
 async def main():
     if not TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN NOT FOUND")
