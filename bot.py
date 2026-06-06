@@ -189,11 +189,11 @@ async def main():
                 signal = generate_signal(pair)
 
                 if signal:
+if signal:
     try:
         await bot.send_message(chat_id=CHANNEL_ID, text=signal)
         print(f"✅ SENT: {pair}")
 
-        # শুধু signal গেলে pause দাও (smart delay)
         await asyncio.sleep(5)
 
     except Exception as e:
@@ -202,7 +202,6 @@ async def main():
 else:
     print(f"⚠️ No signal: {pair}")
 
-# normal delay between pairs
 await asyncio.sleep(3)
 
 print("⏳ Cycle complete, waiting 60s...\n")
