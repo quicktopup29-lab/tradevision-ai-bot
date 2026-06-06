@@ -65,11 +65,12 @@ return f"""
 
 ⚡ Confidence: {confidence}%
 “””
+
 pairs = [
 “EUR/USD”,
 “GBP/USD”,
-“USD/JPY
-"AUD/USD"
+“USD/JPY”,
+“AUD/USD”
 ]
 signal = generate_signal(pair)
 
@@ -81,7 +82,8 @@ if signal:
     )
 
     print(f"✅ Signal Sent: {pair}")
-    await bot.send_message(
+
+await asyncio.sleep(5)
     chat_id=CHANNEL_ID,
     text="""
 🔥 TRADEVISION VIP SIGNAL
