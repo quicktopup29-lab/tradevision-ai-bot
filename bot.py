@@ -10,7 +10,7 @@ def get_market_data(symbol="EUR/USD"):
         params = {
             "symbol": symbol,
             "interval": "1min",
-            "outputsize": 100,
+            "outputsize": 50,
             "apikey": API_KEY
         }
 
@@ -18,10 +18,12 @@ def get_market_data(symbol="EUR/USD"):
         data = response.json()
 
         if "values" not in data:
-            print("No Data:", data)
+            print("API ERROR:", data)
             return None
 
-        df = pd.DataFrame(data["values"])
+        values = data["values"]
+
+        df = pd.DataFrame(values)
 
         df["close"] = df["close"].astype(float)
         df["open"] = df["open"].astype(float)
@@ -31,48 +33,59 @@ def get_market_data(symbol="EUR/USD"):
         return df[::-1]
 
     except Exception as e:
-        print("ERROR:", e)
+        print(e)
         return None
-        PAIRS = [
+        def generate_signal(symbol):
+
+    df = get_market_data(symbol)
+
+    if df is None:
+        return None
+
+    current = df["close"].iloc[-1]
+    previous = df["close"].iloc[-2]
+
+    signal = "BUY" if current > previous else "SELL"
+
+    tp1 = round(current * 1.0005, 5)
+    tp2 = round(current * 1.0010, 5)
+    sl = round(current * 0.9990, 5)
+
+    confidence = 80
+
+    return f"""
+🔥 TRADEVISION VIP SIGNAL
+
+💱 Pair: {symbol}
+📈 Signal: {signal}
+
+🎯 Entry: {current}
+🎯 TP1: {tp1}
+🎯 TP2: {tp2}
+🛑 SL: {sl}
+
+⏰ Expiry: 5 Minutes
+
+⚡ Confidence: {confidence}%
+"""
+pairs = [
     "EUR/USD",
     "GBP/USD",
     "USD/JPY",
     "AUD/USD"
 ]
-def generate_signal(df):
 
-    current = df["close"].iloc[-1]
-    previous = df["close"].iloc[-2]
+for pair in pairs:
 
-    if current > previous:
-        signal = "BUY"
-    else:
-        signal = "SELL"
+    signal = generate_signal(pair)
 
-    return signal, current
-    for pair in PAIRS:
+    if signal:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=signal
+        )
 
-    df = get_market_data(pair)
-
-    if df is None:
-        continue
-
-    signal, price = generate_signal(df)
-
-    message = f"""
-🔥 TRADEVISION VIP SIGNAL
-
-💱 Pair: {pair}
-📈 Signal: {signal}
-
-🎯 Entry: {price:.5f}
-⏰ Expiry: 5 Minutes
-
-⚡ Confidence: 80%
-"""
-
-    await bot.send_message(
-        chat_id=CHANNEL_ID,
-        text=message
-    )
+    await asyncio.sleep(5)
     
+        
+        
