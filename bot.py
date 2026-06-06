@@ -47,7 +47,6 @@ def get_market_data(symbol="EUR/USD"):
 
 
 def generate_signal(symbol):
-    # ৩ নম্বর পয়েন্টের ভ্যালিডেশন: এখানে get_market_data() কল হচ্ছে
     df = get_market_data(symbol)
 
     if df is None or len(df) < 2:
@@ -58,25 +57,20 @@ def generate_signal(symbol):
 
     signal = "BUY" if current > previous else "SELL"
 
-    tp1 = round(current * 1.0005, 5)
-    tp2 = round(current * 1.0010, 5)
-    sl = round(current * 0.9990, 5)
-    confidence = 80
+    # current time (entry time)
+    from datetime import datetime
+    entry_time = datetime.now().strftime("%H:%M")
+
+    expiry = "1 Minute"
 
     return f"""
 🔥 TRADEVISION VIP SIGNAL
 
 💱 Pair: {symbol}
-📈 Signal: {signal}
+📉 Signal: {signal}
 
-🎯 Entry: {current:.5f}
-🎯 TP1: {tp1:.5f}
-🎯 TP2: {tp2:.5f}
-🛑 SL: {sl:.5f}
-
-⏰ Expiry: 5 Minutes
-
-⚡ Confidence: {confidence}%
+⏰ Entry Time: {entry_time}
+⏰ Expiry: {expiry}
 """
 
 
