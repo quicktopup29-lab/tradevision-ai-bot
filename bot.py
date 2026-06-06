@@ -16,6 +16,11 @@ API_KEY = os.getenv("FOREX_API_KEY")
 
 # ১. মার্কেট ডেটা সংগ্রহের ফাংশন
 def get_market_data(symbol="EURUSD"):
+    print("FUNCTION RUNNING:", symbol)
+    print("API_KEY =", API_KEY)
+
+    url = "https://www.alphavantage.co/query"
+def get_market_data(symbol="EURUSD"):
     url = "https://www.alphavantage.co/query"
 
     params = {
