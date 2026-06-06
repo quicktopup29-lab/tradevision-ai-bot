@@ -1,6 +1,7 @@
 import asyncio
 import requests
 import pandas as pd
+import time
 from datetime import datetime
 import pytz
 from telegram import Bot
@@ -12,95 +13,145 @@ CHANNEL_ID = "YOUR_CHANNEL_ID"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ================= TIMEZONE =================
 bd_tz = pytz.timezone("Asia/Dhaka")
 
-
-# ================= SYMBOL FIX =================
+# ================= SAFE SYMBOL =================
 def fix_symbol(symbol):
     return symbol.replace("/", "")
 
+# ================= SAFE API CALL =================
+def safe_api_call(url, params, retries=3):
+    for i in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+
+            if "values" in data:
+                return data
+
+            print("⚠️ API Warning:", data)
+
+        except Exception as e:
+            print(f"⚠️ API Retry {i+1}: {e}")
+            time.sleep(2)
+
+    return None
 
 # ================= MARKET DATA =================
-def get_market_data(symbol="EUR/USD"):
+def get_market_data(symbol):
     try:
         url = "https://api.twelvedata.com/time_series"
 
-        clean_symbol = fix_symbol(symbol)
-
         params = {
-            "symbol": clean_symbol,
+            "symbol": fix_symbol(symbol),
             "interval": "1min",
             "outputsize": 120,
             "apikey": API_KEY
         }
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        data = safe_api_call(url, params)
 
-        if "values" not in data:
-            print("❌ API ERROR:", data)
+        if not data:
             return None
 
         df = pd.DataFrame(data["values"])
-        df = df.astype({"close": float})
+
+        # SAFE CONVERT
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna()
+
+        if len(df) < 50:
+            return None
 
         return df[::-1]
 
     except Exception as e:
-        print("❌ ERROR:", e)
+        print("❌ get_market_data error:", e)
         return None
 
-
-# ================= RSI =================
+# ================= INDICATORS =================
 def rsi(series, period=14):
-    delta = series.diff()
+    try:
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0).rolling(period).mean()
+        loss = -delta.where(delta < 0, 0).rolling(period).mean()
 
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
 
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+        return rsi
 
+    except:
+        return pd.Series([50] * len(series))
 
-# ================= SIGNAL ENGINE =================
+def ema(series, span):
+    return series.ewm(span=span, adjust=False).mean()
+
+# ================= AI SIGNAL ENGINE =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
-    if df is None or len(df) < 50:
+    if df is None:
         return None
 
-    close = df["close"]
+    try:
+        close = df["close"]
 
-    ema9 = close.ewm(span=9).mean()
-    ema21 = close.ewm(span=21).mean()
-    ema50 = close.ewm(span=50).mean()
+        ema9 = ema(close, 9)
+        ema21 = ema(close, 21)
+        ema50 = ema(close, 50)
 
-    rsi_val = rsi(close).iloc[-1]
-    price = close.iloc[-1]
+        rsi_val = rsi(close).iloc[-1]
+        price = close.iloc[-1]
 
-    trend_up = ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]
-    trend_down = ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]
+        # SAFE CHECK
+        if pd.isna(rsi_val) or pd.isna(price):
+            return None
 
-    signal = None
-    confidence = 50
+        trend_up = ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]
+        trend_down = ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]
 
-    # ===== PRO LOGIC =====
-    if trend_up and rsi_val < 70:
-        signal = "BUY"
-        confidence = 80 + (70 - rsi_val) * 0.5
+        score = 0
 
-    elif trend_down and rsi_val > 30:
-        signal = "SELL"
-        confidence = 80 + (rsi_val - 30) * 0.5
+        if trend_up:
+            score += 40
+        if trend_down:
+            score -= 40
 
-    if not signal:
-        return None
+        if rsi_val < 30:
+            score += 20
+        elif rsi_val > 70:
+            score -= 20
+        else:
+            score += 10
 
-    entry_time = datetime.now(bd_tz).strftime("%H:%M")
+        volatility = close.pct_change().rolling(10).std().iloc[-1]
 
-    return f"""
-🔥 PRO TRADING ENGINE SIGNAL
+        if not pd.isna(volatility) and volatility < 0.002:
+            score -= 10
+
+        signal = None
+
+        if score >= 50:
+            signal = "BUY"
+        elif score <= -50:
+            signal = "SELL"
+
+        if not signal:
+            return None
+
+        confidence = min(95, max(60, abs(score)))
+
+        entry_time = datetime.now(bd_tz).strftime("%H:%M")
+
+        tp1 = price * (1.0010 if signal == "BUY" else 0.9990)
+        tp2 = price * (1.0020 if signal == "BUY" else 0.9980)
+        sl = price * (0.9990 if signal == "BUY" else 1.0010)
+
+        return f"""
+🤖 CRASH PROOF AI ENGINE
 
 💱 Pair: {symbol}
 📊 Signal: {signal}
@@ -110,40 +161,50 @@ def generate_signal(symbol):
 
 💰 Price: {price:.5f}
 📈 RSI: {rsi_val:.2f}
+🧠 AI Score: {score}
 ⚡ Confidence: {confidence:.1f}%
 
-🚀 STATUS: LIVE MARKET ANALYSIS
+🎯 TP1: {tp1:.5f}
+🎯 TP2: {tp2:.5f}
+🛑 SL: {sl:.5f}
+
+🔥 STATUS: SAFE MODE ACTIVE
 """
 
+    except Exception as e:
+        print("❌ Signal Error:", e)
+        return None
 
-# ================= MAIN LOOP =================
+# ================= MAIN LOOP (CRASH SAFE) =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 PRO TRADING ENGINE STARTED...")
+    print("🚀 CRASH PROOF ENGINE STARTED...")
 
     while True:
-        for pair in pairs:
-            print(f"🔍 Scanning {pair}...")
+        try:
+            for pair in pairs:
+                print(f"🔍 Checking {pair}...")
 
-            signal = generate_signal(pair)
+                signal = generate_signal(pair)
 
-            if signal:
-                try:
-                    await bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=signal
-                    )
-                    print(f"✅ SENT SIGNAL: {pair}")
+                if signal:
+                    try:
+                        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
+                        print(f"✅ SENT: {pair}")
 
-                except Exception as e:
-                    print("❌ TELEGRAM ERROR:", e)
+                    except Exception as e:
+                        print("❌ Telegram Error:", e)
 
-            await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
-        print("⏳ Waiting next 1-minute cycle...")
-        await asyncio.sleep(60)
+            print("⏳ Cycle complete, waiting 60s...\n")
+            await asyncio.sleep(60)
 
+        except Exception as e:
+            print("🔥 MAIN LOOP CRASH PREVENTED:", e)
+            await asyncio.sleep(10)
 
+# ================= RUN =================
 if __name__ == "__main__":
     asyncio.run(main())
