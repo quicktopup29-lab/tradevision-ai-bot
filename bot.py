@@ -50,11 +50,6 @@ async def main():
 ⚡ Confidence: 87%
 """
             )
-if current_rsi < 30 and current_macd > current_signal:
-    signal = "BUY"
-
-elif current_rsi > 70 and current_macd < current_signal:
-    signal = "SELL"
             print("✅ Message Sent Successfully")
 
         except Exception as e:
