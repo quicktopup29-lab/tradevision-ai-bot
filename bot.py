@@ -1,103 +1,208 @@
 import asyncio
+from datetime import datetime
+import os
 import pandas as pd
+import pytz
 import requests
-from telegram import Bot  # অথবা আপনি যে লাইব্রেরি ব্যবহার করছেন (যেমন: aiogram)
+from telegram import Bot
 
+# ================= CONFIG =================
+TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
+CHANNEL_ID = "@tradevision_ai_signals"
 API_KEY = "c1ec4ef642224321b031cf3068178289"
-CHANNEL_ID = "@tradevision_ai_signals"  # আপনার চ্যানেল আইডি এখানে দিন
-BOT_TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"  # আপনার বটের টোকেন এখানে দিন
 
-# বট অবজেক্ট ইনিশিয়েট করা
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TOKEN)
+
+bd_tz = pytz.timezone("Asia/Dhaka")
 
 
-def get_market_data(symbol="EUR/USD"):
+# ================= SAFE API CALL =================
+def safe_api_call(url, params):
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json()
+
+        if (
+            data.get("code") == 429
+            or data.get("status") == "error"
+            or "values" not in data
+        ):
+            print(f"⛔ API LIMIT OR ERROR: {data.get('message', 'Rate Limit')}")
+            return None
+
+        return data
+
+    except Exception as e:
+        print(f"⚠️ API Connection Error: {e}")
+        return None
+
+
+# ================= MARKET DATA =================
+def get_market_data(symbol):
     try:
         url = "https://api.twelvedata.com/time_series"
+
         params = {
             "symbol": symbol,
             "interval": "1min",
-            "outputsize": 50,
+            "outputsize": 80,
             "apikey": API_KEY,
         }
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        data = safe_api_call(url, params)
 
-        if "values" not in data:
-            print("API ERROR:", data)
+        if not data:
             return None
 
         df = pd.DataFrame(data["values"])
 
-        # ডাটা টাইপ কনভার্ট করা
-        df["close"] = df["close"].astype(float)
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        return df[::-1]  # ডাটা রিভার্স করা (পুরোনো থেকে নতুন)
+        df = df.dropna()
+
+        if len(df) < 55:
+            return None
+
+        return df[::-1]
 
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print("❌ get_market_data error:", e)
         return None
 
 
+# ================= INDICATORS =================
+def rsi(series, period=14):
+    try:
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0).rolling(period).mean()
+        loss = -delta.where(delta < 0, 0).rolling(period).mean()
+
+        rs = gain / loss
+        rsi_val = 100 - (100 / (1 + rs))
+        return rsi_val
+    except:
+        return pd.Series([50] * len(series))
+
+
+def ema(series, span):
+    return series.ewm(span=span, adjust=False).mean()
+
+
+# ================= AI SIGNAL ENGINE (YOUR STYLE) =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
-    if df is None or len(df) < 2:
+    if df is None:
         return None
 
-    current = df["close"].iloc[-1]
-    previous = df["close"].iloc[-2]
+    try:
+        close = df["close"]
 
-    # সহজ ট্রেন্ড অ্যানালাইসিস (আপনার লজিক অনুযায়ী)
-    signal = "BUY" if current > previous else "SELL"
+        ema9 = ema(close, 9)
+        ema21 = ema(close, 21)
+        ema50 = ema(close, 50)
 
-    # টেক প্রফিট এবং স্টপ লস ক্যালকুলেশন
-    tp1 = round(current * 1.0005, 5)
-    tp2 = round(current * 1.0010, 5)
-    sl = round(current * 0.9990, 5)
+        rsi_val = rsi(close).iloc[-1]
+        price = close.iloc[-1]
 
-    confidence = 80
+        if pd.isna(rsi_val) or pd.isna(price):
+            return None
 
-    message = f"""
-🔥 TRADEVISION VIP SIGNAL
+        trend_up = ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]
+        trend_down = ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]
+
+        score = 0
+
+        if trend_up:
+            score += 40
+        if trend_down:
+            score -= 40
+
+        if rsi_val < 30:
+            score += 20
+        elif rsi_val > 70:
+            score -= 20
+        else:
+            score += 10
+
+        volatility = close.pct_change().rolling(10).std().iloc[-1]
+
+        if not pd.isna(volatility) and volatility < 0.002:
+            score -= 10
+
+        signal = None
+
+        if score >= 50:
+            signal = "BUY"
+        elif score <= -50:
+            signal = "SELL"
+
+        if not signal:
+            return None
+
+        confidence = min(95, max(60, abs(score)))
+        entry_time = datetime.now(bd_tz).strftime("%H:%M")
+
+        direction_text = (
+            "📈 Direction: BUY" if signal == "BUY" else "📉 Direction: SELL"
+        )
+
+        # আপনার দেওয়া হুবহু মেসেজ স্টাইল (ডাইনামিক ডেটা সহ)
+        return f"""🔥 TRADEVISION AI VIP SIGNAL 🔥
+
+━━━━━━━━━━━━━━━
 
 💱 Pair: {symbol}
-📈 Signal: {signal}
+{direction_text}
 
-🎯 Entry: {current:.5f}
-🎯 TP1: {tp1:.5f}
-🎯 TP2: {tp2:.5f}
-🛑 SL: {sl:.5f}
+⏰ Entry Time (BD 🇧🇩): {entry_time}
+⌛ Expiry: 1 Minute
 
-⏰ Expiry: 5 Minutes
+⚡ Confidence: {confidence:.0f}%
 
-⚡ Confidence: {confidence}%
-"""
-    return message
+━━━━━━━━━━━━━━━
+
+🚀 STATUS: ACTIVE
+🤖 Powered by TradeVision AI"""
+
+    except Exception as e:
+        print("❌ Signal Error:", e)
+        return None
 
 
+# ================= MAIN LOOP =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    # সব জোড়ার জন্য লুপ ঘুরিয়ে সিগন্যাল পাঠানো
-    for pair in pairs:
-        signal_text = generate_signal(pair)
+    print("🚀 TRADEVISION PRO STARTED...")
 
-        if signal_text:
-            try:
-                await bot.send_message(chat_id=CHANNEL_ID, text=signal_text)
-                print(f"✅ Signal Sent: {pair}")
-            except Exception as e:
-                print(f"❌ Failed to send signal for {pair}: {e}")
+    while True:
+        try:
+            for pair in pairs:
+                print(f"🔍 Checking {pair}...")
 
-        # প্রতিটি সিগন্যাল পাঠানোর মাঝে ৫ সেকেন্ডের বিরতি (এপিআই রেট লিমিট এড়াতে)
-        await asyncio.sleep(5)
+                signal = generate_signal(pair)
+
+                if signal:
+                    try:
+                        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
+                        print(f"✅ SENT: {pair}")
+                    except Exception as e:
+                        print("❌ Telegram Error:", e)
+                else:
+                    print(f"⚠️ No Signal: {pair}")
+
+                await asyncio.sleep(15)
+
+            print("⏳ Waiting for next candle...\n")
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            print("🔥 MAIN LOOP ERROR:", e)
+            await asyncio.sleep(30)
 
 
-# স্ক্রিপ্টটি রান করার মূল অংশ
+# ================= RUN =================
 if __name__ == "__main__":
     asyncio.run(main())
