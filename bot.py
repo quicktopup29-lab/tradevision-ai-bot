@@ -20,8 +20,6 @@ def get_market_data(symbol="EURUSD"):
     print("API_KEY =", API_KEY)
 
     url = "https://www.alphavantage.co/query"
-def get_market_data(symbol="EURUSD"):
-    url = "https://www.alphavantage.co/query"
 
     params = {
         "function": "FX_INTRADAY",
