@@ -1,9 +1,10 @@
 import asyncio
-import requests
-import pandas as pd
-import time
 from datetime import datetime
+import os
+import time
+import pandas as pd
 import pytz
+import requests
 from telegram import Bot
 
 # ================= CONFIG =================
@@ -15,9 +16,11 @@ bot = Bot(token=TELEGRAM_TOKEN)
 
 bd_tz = pytz.timezone("Asia/Dhaka")
 
+
 # ================= SAFE SYMBOL =================
 def fix_symbol(symbol):
     return symbol.replace("/", "")
+
 
 # ================= SAFE API CALL =================
 def safe_api_call(url, params, retries=3):
@@ -37,6 +40,7 @@ def safe_api_call(url, params, retries=3):
 
     return None
 
+
 # ================= MARKET DATA =================
 def get_market_data(symbol):
     try:
@@ -46,7 +50,7 @@ def get_market_data(symbol):
             "symbol": fix_symbol(symbol),
             "interval": "1min",
             "outputsize": 120,
-            "apikey": API_KEY
+            "apikey": API_KEY,
         }
 
         data = safe_api_call(url, params)
@@ -71,6 +75,7 @@ def get_market_data(symbol):
         print("❌ get_market_data error:", e)
         return None
 
+
 # ================= INDICATORS =================
 def rsi(series, period=14):
     try:
@@ -86,8 +91,10 @@ def rsi(series, period=14):
     except:
         return pd.Series([50] * len(series))
 
+
 def ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
+
 
 # ================= AI SIGNAL ENGINE =================
 def generate_signal(symbol):
@@ -175,6 +182,7 @@ def generate_signal(symbol):
         print("❌ Signal Error:", e)
         return None
 
+
 # ================= MAIN LOOP (CRASH SAFE) =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
@@ -189,27 +197,27 @@ async def main():
                 signal = generate_signal(pair)
 
                 if signal:
-if signal:
-    try:
-        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
-        print(f"✅ SENT: {pair}")
+                    try:
+                        await bot.send_message(chat_id=CHANNEL_ID, text=signal)
+                        print(f"✅ SENT: {pair}")
+                        # প্রতিবার সিগন্যাল পাঠানোর পর ৫ সেকেন্ড বিরতি (টেলিগ্রাম লিমিট এড়াতে)
+                        await asyncio.sleep(5)
+                    except Exception as e:
+                        print("❌ Telegram Error:", e)
+                else:
+                    print(f"⚠️ No signal: {pair}")
 
-        await asyncio.sleep(5)
+                # প্রতিটি পেয়ার চেকের মাঝে ৩ সেকেন্ড বিরতি
+                await asyncio.sleep(3)
 
-    except Exception as e:
-        print("❌ Telegram Error:", e)
+            print("⏳ Cycle complete, waiting 60s...\n")
+            await asyncio.sleep(60)
 
-else:
-    print(f"⚠️ No signal: {pair}")
+        except Exception as e:
+            print("🔥 MAIN LOOP CRASH PREVENTED:", e)
+            await asyncio.sleep(10)
 
-await asyncio.sleep(3)
 
-print("⏳ Cycle complete, waiting 60s...\n")
-await asyncio.sleep(60)
-
-except Exception as e:
-    print("🔥 MAIN LOOP CRASH PREVENTED:", e)
-    await asyncio.sleep(10)
 # ================= RUN =================
 if __name__ == "__main__":
     asyncio.run(main())
