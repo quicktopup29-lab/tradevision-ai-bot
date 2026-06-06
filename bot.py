@@ -6,11 +6,11 @@ import pytz
 import requests
 from telegram import Bot
 
-# ================= CONFIG (Railway Variables) =================
-# Railway ড্যাশবোর্ডের নামের সাথে হুবহু মিল রেখে সেট করা হলো
-TOKEN = os.getenv("TELEGRAM_BOT_TOKE")  # ড্যাশবোর্ডে 'N' বাদ পড়েছে
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_")  # ড্যাশবোর্ডে শেষে '_' আছে
-API_KEY = os.getenv("API_KEY", "c1ec4ef642224321b031cf3068178289")
+# ================= CONFIG (সরাসরি আপনার ডাটা বসান) =================
+# এখানে আপনার আসল বট টোকেন এবং চ্যানেল আইডি বসান (সবচেয়ে নিরাপদ উপায়)
+TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
+CHANNEL_ID = "@tradevision_ai_signals"
+API_KEY = "c1ec4ef642224321b031cf3068178289"
 
 bot = Bot(token=TOKEN)
 
@@ -28,7 +28,6 @@ def safe_api_call(url, params):
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
 
-        # Twelve Data API লিমিট বা যেকোনো এরর চেক করার সঠিক নিয়ম
         if (
             data.get("code") == 429
             or data.get("status") == "error"
@@ -49,7 +48,6 @@ def get_market_data(symbol):
     try:
         url = "https://api.twelvedata.com/time_series"
 
-        # ফ্রি প্ল্যানের জন্য রিকোয়েস্ট সাইজ ১২০ থেকে কমিয়ে ৮০ করা হলো (সেফ সাইড)
         params = {
             "symbol": fix_symbol(symbol),
             "interval": "1min",
@@ -64,13 +62,12 @@ def get_market_data(symbol):
 
         df = pd.DataFrame(data["values"])
 
-        # SAFE CONVERT
         for col in ["open", "high", "low", "close"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = df.dropna()
 
-        if len(df) < 55:  # EMA 50 এর জন্য অন্তত ৫৫টি ক্যান্ডেল দরকার
+        if len(df) < 55:
             return None
 
         return df[::-1]
@@ -98,7 +95,7 @@ def ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 
-# ================= AI SIGNAL ENGINE =================
+# ================= AI SIGNAL ENGINE (NEW FORMAT) =================
 def generate_signal(symbol):
     df = get_market_data(symbol)
 
@@ -157,36 +154,42 @@ def generate_signal(symbol):
         tp2 = price * (1.0020 if signal == "BUY" else 0.9980)
         sl = price * (0.9990 if signal == "BUY" else 1.0010)
 
-        return f"""
-🤖 CRASH PROOF AI ENGINE
+        # আপনার দেওয়া নতুন ভিআইপি মেসেজ ফরম্যাট
+        direction_text = (
+            "📈 Direction: BUY" if signal == "BUY" else "📉 Direction: SELL"
+        )
+
+        return f"""🔥 TRADEVISION AI VIP SIGNAL 🔥
+
+━━━━━━━━━━━━━━━
 
 💱 Pair: {symbol}
-📊 Signal: {signal}
-
+{direction_text}
 ⏰ Entry Time (BD 🇧🇩): {entry_time}
-⏳ Expiry: 1 Minute
+⌛ Expiry: 1 Minute
 
-💰 Price: {price:.5f}
+💰 Entry Price: {price:.5f}
 📈 RSI: {rsi_val:.2f}
 🧠 AI Score: {score}
-⚡ Confidence: {confidence:.1f}%
+⚡ Confidence: {confidence:.0f}%
 
 🎯 TP1: {tp1:.5f}
 🎯 TP2: {tp2:.5f}
 🛑 SL: {sl:.5f}
 
-🔥 STATUS: SAFE MODE ACTIVE
-"""
+━━━━━━━━━━━━━━━
+🚀 STATUS: ACTIVE 🤖"""
 
     except Exception as e:
         print("❌ Signal Error:", e)
         return None
 
 
-# ================= MAIN LOOP =================
+# ================= MAIN LOOP (YOUR STRUCTURE) =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD"]
-    print("🚀 CRASH PROOF ENGINE STARTED...")
+
+    print("🚀 TRADEVISION PRO STARTED...")
 
     while True:
         try:
@@ -199,21 +202,20 @@ async def main():
                     try:
                         await bot.send_message(chat_id=CHANNEL_ID, text=signal)
                         print(f"✅ SENT: {pair}")
-                        await asyncio.sleep(5)
                     except Exception as e:
                         print("❌ Telegram Error:", e)
                 else:
-                    print(f"⚠️ No signal: {pair}")
+                    print(f"⚠️ No Signal: {pair}")
 
-                # রেট লিমিট এড়াতে দুই পেয়ারের মাঝে ১৫ সেকেন্ড বিরতি
+                # রেট লিমিট এড়াতে জোড়াগুলোর মাঝে ১৫ সেকেন্ড বিরতি
                 await asyncio.sleep(15)
 
-            print("⏳ Cycle complete, waiting 60s...\n")
+            print("⏳ Waiting for next candle...\n")
             await asyncio.sleep(60)
 
         except Exception as e:
-            print("🔥 MAIN LOOP CRASH PREVENTED:", e)
-            await asyncio.sleep(10)
+            print("🔥 MAIN LOOP ERROR:", e)
+            await asyncio.sleep(30)
 
 
 # ================= RUN =================
