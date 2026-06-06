@@ -38,21 +38,30 @@ try:
 
     data = response.json()
 
-        if "Time Series FX (1min)" not in data:
-            if "Note" in data:
-                print(f"📢 API Note: {data['Note']}")
-            return None
+    if "Time Series FX (1min)" not in data:
+        if "Note" in data:
+            print(f"📢 API Note: {data['Note']}")
+        return None
 
-        ts = data["Time Series FX (1min)"]
+    ts = data["Time Series FX (1min)"]
 
-        rows = []
+    rows = []
 
-        for time_key, values in ts.items():
-            rows.append({
-                "timestamp": time_key,
-                "close": float(values["4. close"])
-            })
+    for time_key, values in ts.items():
+        rows.append({
+            "timestamp": time_key,
+            "close": float(values["4. close"])
+        })
 
+    df = pd.DataFrame(rows)
+    df = df.sort_values("timestamp")
+    df = df.reset_index(drop=True)
+
+    return df
+
+except Exception as e:
+    print(f"❌ Error fetching data for {symbol}: {e}")
+    return None
         df = pd.DataFrame(rows)
         df = df.sort_values("timestamp")
         df = df.reset_index(drop=True)
