@@ -17,6 +17,36 @@ data = r.json()
 print(data)
 # API key: QD90GKKPG2JJG7DC
 API_KEY = "QD90GKKPG2JJG7DC"
+def get_market_data(symbol="EURUSD"):
+    print(f"Fetching {symbol}...")
+
+    try:
+        url = "https://api.exchangerate.host/live"
+        params = {
+            "access_key": API_KEY,
+            "source": symbol[:3],
+            "currencies": symbol[3:]
+        }
+
+        response = requests.get(url, params=params)
+        data = response.json()
+
+        print(data)
+
+        if "quotes" not in data:
+            return None
+
+        price = list(data["quotes"].values())[0]
+
+        df = pd.DataFrame({
+            "close": [price] * 50
+        })
+
+        return df
+
+    except Exception as e:
+        print(e)
+        return None
 async def main():
     if not TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN NOT FOUND")
