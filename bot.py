@@ -4,8 +4,8 @@ import requests
 from telegram import Bot  # অথবা আপনি যে লাইব্রেরি ব্যবহার করছেন (যেমন: aiogram)
 
 API_KEY = "c1ec4ef642224321b031cf3068178289"
-CHANNEL_ID = "YOUR_TELEGRAM_CHANNEL_ID"  # আপনার চ্যানেল আইডি এখানে দিন
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # আপনার বটের টোকেন এখানে দিন
+CHANNEL_ID = "@tradevision_ai_signals"  # আপনার চ্যানেল আইডি এখানে দিন
+BOT_TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"  # আপনার বটের টোকেন এখানে দিন
 
 # বট অবজেক্ট ইনিশিয়েট করা
 bot = Bot(token=BOT_TOKEN)
