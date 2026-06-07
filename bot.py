@@ -3,14 +3,13 @@ from datetime import datetime, timedelta
 import os
 import pandas as pd
 import pytz
-import requests
 from telegram import Bot
+import yfinance as yf
 
 # ================= CONFIGURATION =================
 TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
 FREE_CHANNEL_ID = "@tradevision_ai_signals"  
 VIP_CHANNEL_ID = "@tradevision_vip_signals"  
-API_KEY = "c1ec4ef642224321b031cf3068178289"
 
 bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
@@ -64,28 +63,29 @@ def update_statistics():
         print(f"⚠️ Stats Update Error: {e}")
 
 
-# ================= BATCH MARKET DATA FETCH =================
-def get_batch_market_data(pairs_list, interval):
+# ================= YAHOO FINANCE DATA FETCH (UNLIMITED) =================
+def get_yf_market_data(symbol, interval):
     try:
-        symbol_string = ",".join(pairs_list)
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": symbol_string,
-            "interval": interval,
-            "outputsize": 250,
-            "apikey": API_KEY,
-        }
-
-        r = requests.get(url, params=params, timeout=20)
-        data = r.json()
-
-        if data.get("code") == 429 or data.get("status") == "error":
-            print(f"⛔ API LIMIT OR ERROR: {data.get('message', 'Rate Limit Hit')}")
+        # Yahoo Finance-এর জন্য ফরেক্স পেয়ার ফরম্যাট (যেমন: EURUSD=X)
+        yf_symbol = symbol.replace("/", "") + "=X"
+        
+        # টাইমফ্রেম ফরম্যাট কনভার্সন
+        yf_interval = "1m" if interval == "1min" else "5m"
+        
+        # ডেটা ডাউনলোড (১ মিনিটের জন্য ৭ দিন এবং ৫ মিনিটের জন্য ৬০ দিনের ডেটা পাওয়া যায় ফ্রিতে)
+        period = "5d" if interval == "1min" else "30d"
+        
+        df = yf.download(tickers=yf_symbol, period=period, interval=yf_interval, progress=False)
+        
+        if df.empty or len(df) < 50: 
             return None
 
-        return data
+        # কলামের নাম লোয়ারকেস করা (কোডের আগের লজিক ঠিক রাখার জন্য)
+        df.columns = [col.lower() for col in df.columns]
+        
+        return df
     except Exception as e:
-        print(f"⚠️ API Connection Error: {e}. Skipping cycle...")
+        print(f"❌ Yahoo Finance Fetch Error for {symbol} ({interval}): {e}")
         return None
 
 
@@ -111,18 +111,19 @@ def bollinger_bands(series, period=20, num_std=2):
     return upper_band, lower_band
 
 
-# ================= SIGNAL CALCULATION ENGINE =================
-def process_indicators_and_score(values_list):
+# ================= SIGNAL ENGINE =================
+def analyze_market(symbol, timeframe):
+    df = get_yf_market_data(symbol, timeframe)
+    if df is None or len(df) < 50: return None
+
     try:
-        df = pd.DataFrame(values_list)
-        for col in ["open", "high", "low", "close"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df.dropna()[::-1]
-
-        if len(df) < 210: return None
-
         close = df["close"]
-        ema200 = ema(close, 200).iloc[-1]
+        
+        # yfinance-এ ডেটার সাইজ অনুযায়ী ডায়নামিক EMA সেটআপ (১ মিনিটের ব্যাক-ডেটার জন্য সেফটি)
+        available_len = len(close)
+        ema_long_period = 200 if available_len >= 200 else 50
+        
+        ema_long = ema(close, ema_long_period).iloc[-1]
         ema9 = ema(close, 9).iloc[-1]
         ema21 = ema(close, 21).iloc[-1]
 
@@ -136,12 +137,12 @@ def process_indicators_and_score(values_list):
         score = 0
         direction = None
 
-        if current_price > ema200:
+        if current_price > ema_long:
             if ema9 > ema21: score += 30
             if current_price <= lower_bb.iloc[-1]: score += 35
             if rsi_val < 35 or (last_rsi < 30 and rsi_val > 30): score += 35
             direction = "BUY"
-        elif current_price < ema200:
+        elif current_price < ema_long:
             if ema9 < ema21: score += 30
             if current_price >= upper_bb.iloc[-1]: score += 35
             if rsi_val > 65 or (last_rsi > 70 and rsi_val < 70): score += 35
@@ -155,7 +156,7 @@ def process_indicators_and_score(values_list):
             return {"signal": direction, "confidence": min(84, score + 15), "tier": "FREE"}
 
     except Exception as e:
-        print(f"❌ Indicator Calculation Error: {e}")
+        print(f"❌ Engine Error for {symbol} ({timeframe}): {e}")
         return None
 
 
@@ -187,7 +188,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v8.5*"""
+🤖 *Powered by TradeVision Pro Engine v9.0 (Unlimited Mode)*"""
 
 
 def format_stats_message():
@@ -209,92 +210,55 @@ def format_stats_message():
 
 # ================= MAIN ENGINE LOOP =================
 async def main():
-    # ৩টি হাই-ভলিউম কারেন্সি পেয়ার (ফ্রি এপিআই লিমিট প্রটেক্টেড)
-    pairs = ["EUR/USD", "GBP/USD", "USD/JPY"]
+    # আবার আগের মতো ৪টি বেস্ট ফরেক্স পেয়ার সম্পূর্ণ আনলিমিটেড!
+    pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI SAFE ENGINE v8.5 STARTED (3-PAIR MAX STABILITY)...")
+    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.0 STARTED (POWERED BY YFINANCE)...")
 
     while True:
         try:
             now_bd = datetime.now(bd_tz)
+            
+            # WEEKEND DETECTOR
             if now_bd.weekday() in [5, 6]:
                 print("🔴 WEEKEND DETECTED. MARKET CLOSED.")
-                weekend_msg = "🔴 **MARKET CLOSED**\n\nForex market will reopen on Monday."
-                try:
-                    await bot.send_message(chat_id=FREE_CHANNEL_ID, text=weekend_msg, parse_mode="Markdown")
-                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=weekend_msg, parse_mode="Markdown")
-                except: pass
                 await asyncio.sleep(3600)
                 continue
 
-            # ─── ১. ৫ মিনিটের টাইমফ্রেম প্রসেসিং (৩টি পেয়ার একসাথে) ───
-            print("\n📥 Fetching Batch Data for 5-Min Timeframe...")
-            batch_data_5m = get_batch_market_data(pairs, "5min")
-            
-            if batch_data_5m and isinstance(batch_data_5m, dict):
+            # দুটি টাইমফ্রেমেরই এনালাইসিস লুপ
+            for timeframe in ["5min", "1min"]:
                 for pair in pairs:
-                    # যদি ডেটায় সিঙ্গেল ডিকশনারি বা সরাসরি পেয়ার কি (Key) না থাকে, তার সেফটি হ্যান্ডলিং
-                    pair_data = batch_data_5m.get(pair) if "values" not in batch_data_5m else batch_data_5m
-                    if not pair_data or not isinstance(pair_data, dict) or "values" not in pair_data: 
-                        continue
+                    print(f"🔍 Analyzing {pair} ({timeframe})...")
+                    res = analyze_market(pair, timeframe)
 
-                    res = process_indicators_and_score(pair_data["values"])
                     if res:
                         signal = res["signal"]
                         confidence = res["confidence"]
                         tier = res["tier"]
-                        filter_key = f"{tier}_5M"
+                        filter_key = f"{tier}_{timeframe.upper()}"
 
                         if last_signals[filter_key].get(pair) != signal:
-                            current_minute = now_bd.minute
-                            remainder = current_minute % 5
-                            minutes_to_add = 5 - remainder
-                            entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
+                            if timeframe == "5min":
+                                current_minute = now_bd.minute
+                                remainder = current_minute % 5
+                                minutes_to_add = 5 - remainder
+                                entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
+                            else:
+                                entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
 
-                            msg = format_telegram_message(pair, signal, confidence, entry_time, "5min", tier)
+                            msg = format_telegram_message(pair, signal, confidence, entry_time, timeframe, tier)
                             target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
                             
                             try:
                                 await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                                save_signal_to_csv(pair, signal, confidence, "5min", tier)
+                                save_signal_to_csv(pair, signal, confidence, timeframe, tier)
                                 last_signals[filter_key][pair] = signal
-                                print(f"✅ [5M] {filter_key} SIGNAL SENT: {pair}")
+                                print(f"✅ [{timeframe.upper()}] {filter_key} SIGNAL SENT: {pair}")
                             except Exception as e:
                                 print(f"❌ Telegram Send Error: {e}")
-
-            # ৫ সেকেন্ড সেফটি বাফার
-            await asyncio.sleep(5)
-
-            # ─── ২. ১ মিনিটের টাইমফ্রেম প্রসেসিং (৩টি পেয়ার একসাথে) ───
-            print("📥 Fetching Batch Data for 1-Min Timeframe...")
-            batch_data_1m = get_batch_market_data(pairs, "1min")
-            
-            if batch_data_1m and isinstance(batch_data_1m, dict):
-                for pair in pairs:
-                    pair_data = batch_data_1m.get(pair) if "values" not in batch_data_1m else batch_data_1m
-                    if not pair_data or not isinstance(pair_data, dict) or "values" not in pair_data: 
-                        continue
-
-                    res = process_indicators_and_score(pair_data["values"])
-                    if res:
-                        signal = res["signal"]
-                        confidence = res["confidence"]
-                        tier = res["tier"]
-                        filter_key = f"{tier}_1M"
-
-                        if last_signals[filter_key].get(pair) != signal:
-                            entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
-
-                            msg = format_telegram_message(pair, signal, confidence, entry_time, "1min", tier)
-                            target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
-                            
-                            try:
-                                await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                                save_signal_to_csv(pair, signal, confidence, "1min", tier)
-                                last_signals[filter_key][pair] = signal
-                                print(f"✅ [1M] {filter_key} SIGNAL SENT: {pair}")
-                            except Exception as e:
-                                print(f"❌ Telegram Send Error: {e}")
+                    
+                    # কোনো রিকোয়েস্ট লিমিট নেই, তাও সার্ভার ব্লকিং এড়াতে ১ সেকেন্ডের একটা সাধারণ গ্যাপ
+                    await asyncio.sleep(1)
 
             # Hourly Stats
             if now_bd.minute == 0:
