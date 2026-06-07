@@ -64,42 +64,29 @@ def update_statistics():
         print(f"⚠️ Stats Update Error: {e}")
 
 
-# ================= CRASH PROTECTED API CALL =================
-def safe_api_call(url, params):
+# ================= BATCH MARKET DATA FETCH (1 Call for All Pairs) =================
+def get_batch_market_data(pairs_list, interval):
     try:
-        r = requests.get(url, params=params, timeout=15)
-        data = r.json()
-        if data.get("code") == 429 or data.get("status") == "error" or "values" not in data:
-            print(f"⛔ API LIMIT OR ERROR: {data.get('message', 'Rate Limit Hit')}")
-            return None
-        return data
-    except Exception as e:
-        print(f"⚠️ API Connection Error: {e}. Skipping cycle...")
-        return None
-
-
-# ================= MARKET DATA FETCH =================
-def get_market_data(symbol, interval):
-    try:
+        # ৪টি পেয়ারকে কমা দিয়ে একসাথে এপিআই-তে পাঠানো হচ্ছে (১টি ক্রেডিট খরচ হবে)
+        symbol_string = ",".join(pairs_list)
         url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": symbol,
+            "symbol": symbol_string,
             "interval": interval,
             "outputsize": 250,
             "apikey": API_KEY,
         }
-        data = safe_api_call(url, params)
-        if not data: return None
 
-        df = pd.DataFrame(data["values"])
-        for col in ["open", "high", "low", "close"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        r = requests.get(url, params=params, timeout=20)
+        data = r.json()
 
-        df = df.dropna()
-        if len(df) < 210: return None
-        return df[::-1]
+        if data.get("code") == 429 or data.get("status") == "error":
+            print(f"⛔ API LIMIT OR ERROR: {data.get('message', 'Rate Limit Hit')}")
+            return None
+
+        return data
     except Exception as e:
-        print(f"❌ get_market_data error for {symbol} ({interval}): {e}")
+        print(f"⚠️ API Connection Error: {e}. Skipping cycle...")
         return None
 
 
@@ -125,12 +112,16 @@ def bollinger_bands(series, period=20, num_std=2):
     return upper_band, lower_band
 
 
-# ================= SMART GRADE SIGNAL ENGINE =================
-def analyze_market(symbol, timeframe):
-    df = get_market_data(symbol, timeframe)
-    if df is None or len(df) < 200: return None
-
+# ================= SIGNAL CALCULATION ENGINE =================
+def process_indicators_and_score(values_list):
     try:
+        df = pd.DataFrame(values_list)
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna()[::-1]
+
+        if len(df) < 210: return None
+
         close = df["close"]
         ema200 = ema(close, 200).iloc[-1]
         ema9 = ema(close, 9).iloc[-1]
@@ -151,7 +142,6 @@ def analyze_market(symbol, timeframe):
             if current_price <= lower_bb.iloc[-1]: score += 35
             if rsi_val < 35 or (last_rsi < 30 and rsi_val > 30): score += 35
             direction = "BUY"
-
         elif current_price < ema200:
             if ema9 < ema21: score += 30
             if current_price >= upper_bb.iloc[-1]: score += 35
@@ -161,16 +151,12 @@ def analyze_market(symbol, timeframe):
         if not direction or score < 40: return None
 
         if score >= 85:
-            tier = "VIP"
-            confidence = min(98, score + 10)
+            return {"signal": direction, "confidence": min(98, score + 10), "tier": "VIP"}
         else:
-            tier = "FREE"
-            confidence = min(84, score + 15)
-
-        return {"signal": direction, "confidence": confidence, "tier": tier}
+            return {"signal": direction, "confidence": min(84, score + 15), "tier": "FREE"}
 
     except Exception as e:
-        print(f"❌ Engine Error for {symbol} ({timeframe}): {e}")
+        print(f"❌ Indicator Calculation Error: {e}")
         return None
 
 
@@ -202,7 +188,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v7.7*"""
+🤖 *Powered by TradeVision Pro Engine v8.0*"""
 
 
 def format_stats_message():
@@ -226,11 +212,10 @@ def format_stats_message():
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI MULTI-TIER ENGINE v7.7 STARTED (STRICT RATE-LIMIT ISOLATION)...")
+    print("🚀 TRADEVISION AI BATCH ENGINE v8.0 STARTED (ANTI-RATE-LIMIT)...")
 
     while True:
         try:
-            # WEEKEND DETECTOR
             now_bd = datetime.now(bd_tz)
             if now_bd.weekday() in [5, 6]:
                 print("🔴 WEEKEND DETECTED. MARKET CLOSED.")
@@ -242,68 +227,72 @@ async def main():
                 await asyncio.sleep(3600)
                 continue
 
-            # ─── ১. প্রথমে শুধু ৫ মিনিটের টাইমফ্রেম চেক (৪টি কল) ───
-            print("\n⏱️ --- STARTING 5-MIN TIMEFRAME CYCLE ---")
-            for pair in pairs:
-                print(f"🔍 Analyzing {pair} (5min)...")
-                res = analyze_market(pair, "5min")
+            # ─── ১. ৫ মিনিটের টাইমফ্রেম প্রসেসিং (মাত্র ১টি এপিআই কল!) ───
+            print("\n📥 Fetching Batch Data for 5-Min Timeframe...")
+            batch_data_5m = get_batch_market_data(pairs, "5min")
+            
+            if batch_data_5m:
+                for pair in pairs:
+                    # ব্যাচ ডেটা থেকে নির্দিষ্ট পেয়ারের ডেটা আলাদা করা
+                    pair_data = batch_data_5m.get(pair) if len(pairs) > 1 else batch_data_5m
+                    if not pair_data or "values" not in pair_data: continue
 
-                if res:
-                    signal = res["signal"]
-                    confidence = res["confidence"]
-                    tier = res["tier"]
-                    filter_key = f"{tier}_5M"
+                    res = process_indicators_and_score(pair_data["values"])
+                    if res:
+                        signal = res["signal"]
+                        confidence = res["confidence"]
+                        tier = res["tier"]
+                        filter_key = f"{tier}_5M"
 
-                    if last_signals[filter_key].get(pair) != signal:
-                        current_minute = now_bd.minute
-                        remainder = current_minute % 5
-                        minutes_to_add = 5 - remainder
-                        entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
+                        if last_signals[filter_key].get(pair) != signal:
+                            current_minute = now_bd.minute
+                            remainder = current_minute % 5
+                            minutes_to_add = 5 - remainder
+                            entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
 
-                        msg = format_telegram_message(pair, signal, confidence, entry_time, "5min", tier)
-                        target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
-                        
-                        try:
-                            await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                            save_signal_to_csv(pair, signal, confidence, "5min", tier)
-                            last_signals[filter_key][pair] = signal
-                            print(f"✅ {filter_key} SIGNAL SENT: {pair}")
-                        except Exception as e:
-                            print(f"❌ Telegram Send Error: {e}")
+                            msg = format_telegram_message(pair, signal, confidence, entry_time, "5min", tier)
+                            target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
+                            
+                            try:
+                                await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
+                                save_signal_to_csv(pair, signal, confidence, "5min", tier)
+                                last_signals[filter_key][pair] = signal
+                                print(f"✅ [5M] {filter_key} SIGNAL SENT: {pair}")
+                            except Exception as e:
+                                print(f"❌ Telegram Send Error: {e}")
 
-                await asyncio.sleep(10) # ৪টি কলের মাঝে ১০ সেকেন্ড করে মোট ৪০ সেকেন্ড গ্যাপ।
+            # ২ সেকেন্ড বাফার বিরতি
+            await asyncio.sleep(2)
 
-            # 🛡️ ৫ মিনিট শেষ করে ১ মিনিটের লুপে যাওয়ার আগে ৩০ সেকেন্ডের একটি সলিড বিরতি (যাতে মিনিট ক্লিন হয়ে যায়)
-            print("⏳ 5-Min Cycle Done. Cooldown for 30s to reset API Limit...")
-            await asyncio.sleep(30)
+            # ─── ২. ১ মিনিটের টাইমফ্রেম প্রসেসিং (মাত্র ১টি এপিআই কল!) ───
+            print("📥 Fetching Batch Data for 1-Min Timeframe...")
+            batch_data_1m = get_batch_market_data(pairs, "1min")
+            
+            if batch_data_1m:
+                for pair in pairs:
+                    pair_data = batch_data_1m.get(pair) if len(pairs) > 1 else batch_data_1m
+                    if not pair_data or "values" not in pair_data: continue
 
-            # ─── ২. তারপর শুধু ১ মিনিটের টাইমফ্রেম চেক (৪টি কল) ───
-            print("\n⏱️ --- STARTING 1-MIN TIMEFRAME CYCLE ---")
-            for pair in pairs:
-                print(f"🔍 Analyzing {pair} (1min)...")
-                res = analyze_market(pair, "1min")
+                    res = process_indicators_and_score(pair_data["values"])
+                    if res:
+                        signal = res["signal"]
+                        confidence = res["confidence"]
+                        tier = res["tier"]
+                        filter_key = f"{tier}_1M"
 
-                if res:
-                    signal = res["signal"]
-                    confidence = res["confidence"]
-                    tier = res["tier"]
-                    filter_key = f"{tier}_1M"
+                        if last_signals[filter_key].get(pair) != signal:
+                            entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
 
-                    if last_signals[filter_key].get(pair) != signal:
-                        entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
-
-                        msg = format_telegram_message(pair, signal, confidence, entry_time, "1min", tier)
-                        target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
-                        
-                        try:
-                            await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                            save_signal_to_csv(pair, signal, confidence, "1min", tier)
-                            last_signals[filter_key][pair] = signal
-                            print(f"✅ {filter_key} SIGNAL SENT: {pair}")
-                        except Exception as e:
-                            print(f"❌ Telegram Send Error: {e}")
-
-                await asyncio.sleep(10) # ৪টি কলের মাঝে ১০ সেকেন্ড করে মোট ৪০ সেকেন্ড গ্যাপ।
+                            msg = format_telegram_message(pair, signal, confidence, entry_time, "1min", tier)
+                            target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
+                            
+                            try:
+                                await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
+                                save_signal_to_csv(pair, signal, confidence, "1min", tier)
+                                last_signals[filter_key][pair] = signal
+                                print(f"✅ [1M] {filter_key} SIGNAL SENT: {pair}")
+                            except Exception as e:
+                                print(f"❌ Telegram Send Error: {e}")
 
             # Hourly Stats
             if now_bd.minute == 0:
@@ -313,8 +302,8 @@ async def main():
                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=stats_msg, parse_mode="Markdown")
                 except: pass
 
-            print("\n⏳ Full Cycle Finished. Cooling down for 30 seconds...\n")
-            await asyncio.sleep(30)
+            print("⏳ Cycle Finished. Waiting 60 seconds for next candle...\n")
+            await asyncio.sleep(60)
 
         except Exception as main_err:
             print(f"🔥 CRASH PROTECTED: {main_err}. Re-initializing in 30s...")
