@@ -63,16 +63,11 @@ def update_statistics():
         print(f"⚠️ Stats Update Error: {e}")
 
 
-# ================= YAHOO FINANCE DATA FETCH (UNLIMITED) =================
+# ================= YAHOO FINANCE DATA FETCH (FIXED) =================
 def get_yf_market_data(symbol, interval):
     try:
-        # Yahoo Finance-এর জন্য ফরেক্স পেয়ার ফরম্যাট (যেমন: EURUSD=X)
         yf_symbol = symbol.replace("/", "") + "=X"
-        
-        # টাইমফ্রেম ফরম্যাট কনভার্সন
         yf_interval = "1m" if interval == "1min" else "5m"
-        
-        # ডেটা ডাউনলোড (১ মিনিটের জন্য ৭ দিন এবং ৫ মিনিটের জন্য ৬০ দিনের ডেটা পাওয়া যায় ফ্রিতে)
         period = "5d" if interval == "1min" else "30d"
         
         df = yf.download(tickers=yf_symbol, period=period, interval=yf_interval, progress=False)
@@ -80,8 +75,12 @@ def get_yf_market_data(symbol, interval):
         if df.empty or len(df) < 50: 
             return None
 
-        # কলামের নাম লোয়ারকেস করা (কোডের আগের লজিক ঠিক রাখার জন্য)
-        df.columns = [col.lower() for col in df.columns]
+        # 🚀 𝗧𝘂𝗽𝗹𝗲/𝗠𝘂𝗹𝘁𝗶𝗜𝗻𝗱𝗲𝘅 𝗖𝗼𝗹𝘂𝗺𝗻𝘀 𝗙𝗶𝘅: কলামগুলোকে প্লেইন টেক্সটে কনভার্ট করা হচ্ছে
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] for col in df.columns]
+        
+        # কলামের নাম সব ছোট হাতের অক্ষরে রূপান্তর
+        df.columns = [str(col).lower() for col in df.columns]
         
         return df
     except Exception as e:
@@ -119,7 +118,6 @@ def analyze_market(symbol, timeframe):
     try:
         close = df["close"]
         
-        # yfinance-এ ডেটার সাইজ অনুযায়ী ডায়নামিক EMA সেটআপ (১ মিনিটের ব্যাক-ডেটার জন্য সেফটি)
         available_len = len(close)
         ema_long_period = 200 if available_len >= 200 else 50
         
@@ -188,7 +186,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v9.0 (Unlimited Mode)*"""
+🤖 *Powered by TradeVision Pro Engine v9.1 (Fixed Mode)*"""
 
 
 def format_stats_message():
@@ -210,22 +208,19 @@ def format_stats_message():
 
 # ================= MAIN ENGINE LOOP =================
 async def main():
-    # আবার আগের মতো ৪টি বেস্ট ফরেক্স পেয়ার সম্পূর্ণ আনলিমিটেড!
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.0 STARTED (POWERED BY YFINANCE)...")
+    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.1 STARTED (POWERED BY YFINANCE)...")
 
     while True:
         try:
             now_bd = datetime.now(bd_tz)
             
-            # WEEKEND DETECTOR
             if now_bd.weekday() in [5, 6]:
                 print("🔴 WEEKEND DETECTED. MARKET CLOSED.")
                 await asyncio.sleep(3600)
                 continue
 
-            # দুটি টাইমফ্রেমেরই এনালাইসিস লুপ
             for timeframe in ["5min", "1min"]:
                 for pair in pairs:
                     print(f"🔍 Analyzing {pair} ({timeframe})...")
@@ -257,10 +252,8 @@ async def main():
                             except Exception as e:
                                 print(f"❌ Telegram Send Error: {e}")
                     
-                    # কোনো রিকোয়েস্ট লিমিট নেই, তাও সার্ভার ব্লকিং এড়াতে ১ সেকেন্ডের একটা সাধারণ গ্যাপ
                     await asyncio.sleep(1)
 
-            # Hourly Stats
             if now_bd.minute == 0:
                 stats_msg = format_stats_message()
                 try:
