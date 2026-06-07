@@ -20,9 +20,7 @@ last_signals = {
     "VIP_1MIN": {}, "VIP_5MIN": {}
 }
 
-# একটি গ্লোবাল লিস্ট পেন্ডিং রেজাল্ট ট্র্যাক করার জন্য
 pending_results = []
-
 stats = {"total": 0, "wins": 0, "losses": 0}
 
 
@@ -70,6 +68,24 @@ def bollinger_bands(series, period=20, num_std=2):
     return upper_band, lower_band
 
 
+# ================= PRO FILTER: MULTI-TIMEFRAME TREND CHECK =================
+def check_higher_timeframe_trend(symbol, target_direction):
+    """৫ মিনিটের চার্ট চেক করে বড় ট্রেন্ড নিশ্চিত করে (১ মিনিটের ফেক সিগন্যাল কমানোর জন্য)"""
+    df_5m = get_yf_market_data(symbol, "5min")
+    if df_5m is None or len(df_5m) < 50:
+        return True # ডেটা না পাওয়া গেলে সেফটির জন্য স্কিপ করবে না
+    
+    try:
+        close = df_5m["close"]
+        ema200 = ema(close, 200).iloc[-1]
+        current_price = close.iloc[-1]
+        
+        macro_trend = "BUY" if current_price > ema200 else "SELL"
+        return macro_trend == target_direction
+    except:
+        return True
+
+
 # ================= SIGNAL ENGINE =================
 def analyze_market(symbol, timeframe):
     df = get_yf_market_data(symbol, timeframe)
@@ -107,6 +123,12 @@ def analyze_market(symbol, timeframe):
 
         if not direction or score < 40: return None
 
+        # 🚀 PRO FEATURE: ১ মিনিটের চার্ট হলে ৫ মিনিটের কনফার্মেশন মাস্ট!
+        if timeframe == "1min":
+            if not check_higher_timeframe_trend(symbol, direction):
+                print(f"🛡️ Signal Blocked by Multi-Timeframe Filter: {symbol} 1Min {direction}")
+                return None
+
         if score >= 85:
             return {"signal": direction, "confidence": min(98, score + 10), "tier": "VIP", "entry_price": current_price}
         else:
@@ -118,82 +140,117 @@ def analyze_market(symbol, timeframe):
 
 
 # ================= TELEGRAM MESSAGE FORMATTING =================
-def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, tier):
+def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, tier, is_martingale=False):
     dir_emoji = "🟢" if signal == "BUY" else "🔴"
     dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
     exp_text = "1 Minute" if timeframe == "1min" else "5 Minutes"
+    
+    m_header = "⚠️ [MARTINGALE M1] " if is_martingale else ""
 
     if tier == "VIP":
         header = f"💎 **TRADEVISION AI → VIP SURE-SHOT** 💎"
-        strategy = "AI Advanced Breakout / Reversal"
+        strategy = "AI Advanced Breakout + MTF Filter"
         conf_label = f"`{confidence:.0f}% ACCURATE` 🔥"
     else:
         header = f"📡 **TRADEVISION AI → FREE SIGNAL** 📡"
         strategy = "Alpha Momentum Scalping"
         conf_label = f"`–` ⚡"  
 
-    return f"""{header}
+    return f"""{m_header}{header}
 ╔═══════════════════════════╗
   📊 **Asset Pair :** `{symbol}`
   {dir_emoji} **Direction  :** `{dir_text}`
   
   ⏰ **Entry Time :** `{entry_time}` (BD 🇧🇩)
   ⏳ **Expiry     :** `{exp_text}`
-  📈 **Entry Type :** `Next Candle`
+  📈 **Entry Type :** `{"Martingale Candle" if is_martingale else "Next Candle"}`
 ╚═══════════════════════════╝
 🎯 *Strategy : {strategy}*
 ⚡ *Confidence :* {conf_label}
 
-🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v10.0*"""
+🚀 **STATUS :** `{"MARTINGALE ACTIVE" if is_martingale else "ACTIVE"}`
+🤖 *Powered by TradeVision Pro Engine v11.0*"""
 
 
-# ================= AUTO RESULT CHECKER ENGINE =================
+# ================= PRO AUTO RESULT & MARTINGALE ENGINE =================
 async def check_pending_results():
     global pending_results
     now_bd = datetime.now(bd_tz)
     still_pending = []
 
     for item in pending_results:
-        # এক্সপায়ারি টাইমের পর আরও ৩০ সেকেন্ড বাফার দেওয়া হলো সেফটি ডেটার জন্য
         if now_bd >= (item["expiry_time"] + timedelta(seconds=30)):
             print(f"🔄 Checking Result for {item['pair']} ({item['timeframe']})...")
             df = get_yf_market_data(item["pair"], item["timeframe"])
             
             if df is not None:
                 try:
-                    # এক্সপায়ারড হওয়া ক্যান্ডেলের ক্লোজ প্রাইস নেওয়া
                     current_close = df["close"].iloc[-1]
                     entry_price = item["entry_price"]
                     signal = item["signal"]
                     
-                    # উইন-লস ক্যালকুলেশন লজিক
                     is_win = False
                     if signal == "BUY" and current_close > entry_price:
                         is_win = True
                     elif signal == "SELL" and current_close < entry_price:
                         is_win = True
 
-                    # মেসেজ ফরম্যাট
-                    status_emoji = "✅✅ IT'S A WIN!! ✅✅" if is_win else "❌ LOSS ❌"
-                    result_text = f"""📊 **TRADEVISION AI → RESULT UPDATE**
+                    if is_win:
+                        # ডিরেক্ট উইন অথবা মার্টিনগেল উইন মেসেজ
+                        msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
+                        result_text = f"""📊 **TRADEVISION AI → RESULT**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔹 **Asset Pair :** `{item['pair']}`
-⏰ **Signal Time :** `{item['entry_time_str']}` ({item['timeframe']})
-🎯 **Direction  :** `{signal}`
+🎯 **Direction  :** `{signal}` ({item['timeframe']})
 
 💵 **Entry Price :** `{entry_price:.5f}`
 📉 **Expiry Price :** `{current_close:.5f}`
 
-🏆 **RESULT :** {status_emoji}
+🏆 **RESULT :** {msg_type} 🎉
 ━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-                    # টেলিগ্রামে রেজাল্ট পাঠানো
-                    await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
-                    print(f"📊 RESULT SENT: {item['pair']} -> {'WIN' if is_win else 'LOSS'}")
+                        await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
+                    
+                    else:
+                        # 🚀 যদি ডিরেক্ট সিগন্যাল লস হয় এবং মার্টিনগেল এখনো দেওয়া না হয়ে থাকে -> M1 স্টার্ট হবে
+                        if not item["is_martingale"]:
+                            m_duration = 5 if item["timeframe"] == "5min" else 1
+                            m_run_time = now_bd
+                            m_entry_str = m_run_time.strftime("%H:%M")
+                            m_expiry = m_run_time + timedelta(minutes=m_duration)
+
+                            # মার্টিনগেল এলার্ট পাঠানো চ্যানেলে
+                            m_alert = f"⚠️ **{item['pair']} Direct Trade missed by points. Use 1-Step Martingale (M1) NOW!**"
+                            await bot.send_message(chat_id=item["channel_id"], text=m_alert, parse_mode="Markdown")
+
+                            # নতুন একটি মার্টিনগেল আইটেম পেন্ডিং লিস্টে যোগ করা
+                            still_pending.append({
+                                "pair": item["pair"],
+                                "signal": signal,
+                                "entry_price": current_close, # মার্টিনগেলের জন্য এই ক্লোজ প্রাইসটাই নতুন এন্ট্রি প্রাইস
+                                "timeframe": item["timeframe"],
+                                "entry_time_str": m_entry_str,
+                                "expiry_time": m_expiry,
+                                "channel_id": item["channel_id"],
+                                "is_martingale": True # এইবার মার্টিনগেল ট্রু করা হলো
+                            })
+                            print(f"⚠️ MARTINGALE M1 TRIGGERED FOR {item['pair']}")
+                        else:
+                            # মার্টিনগেলও যদি লস হয়, তবেই ফাইনাল LOSS ঘোষণা করা হবে
+                            result_text = f"""📊 **TRADEVISION AI → RESULT**
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 **Asset Pair :** `{item['pair']}`
+🎯 **Direction  :** `{signal}` ({item['timeframe']})
+
+💵 **Entry Price :** `{entry_price:.5f}`
+📉 **Expiry Price :** `{current_close:.5f}`
+
+🏆 **RESULT :** ❌ M1 LOSS ❌
+━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+                            await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
                     
                 except Exception as res_err:
                     print(f"❌ Error parsing result for {item['pair']}: {res_err}")
-                    still_pending.append(item) # এরর হলে পরের লুপে আবার ট্রাই করবে
+                    still_pending.append(item)
             else:
                 still_pending.append(item)
         else:
@@ -206,7 +263,7 @@ async def check_pending_results():
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI UNLIMITED ENGINE v10.0 STARTED (AUTO-RESULT MODE)...")
+    print("🚀 TRADEVISION AI PRO ENGINE v11.0 STARTED (MTF FILTER + MARTINGALE)...")
 
     while True:
         try:
@@ -217,7 +274,6 @@ async def main():
                 await asyncio.sleep(3600)
                 continue
 
-            # প্রতি লুপের শুরুতে পেন্ডিং রেজাল্টগুলো আগে চেক হবে
             await check_pending_results()
 
             for timeframe in ["5min", "1min"]:
@@ -232,7 +288,6 @@ async def main():
                         filter_key = f"{tier}_{timeframe.upper()}"
 
                         if last_signals[filter_key].get(pair) != signal:
-                            # টাইম ক্যালকুলেশন
                             if timeframe == "5min":
                                 current_minute = now_bd.minute
                                 remainder = current_minute % 5
@@ -250,12 +305,10 @@ async def main():
                             target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
                             
                             try:
-                                # সিগন্যাল পাঠানো
                                 await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
                                 last_signals[filter_key][pair] = signal
-                                print(f"✅ [{timeframe.upper()}] SIGNAL SENT: {pair}")
+                                print(f"✅ [{timeframe.upper()}] PRO SIGNAL SENT: {pair}")
 
-                                # রেজাল্ট ট্র্যাকিং লিস্টে এড করা
                                 pending_results.append({
                                     "pair": pair,
                                     "signal": signal,
@@ -263,7 +316,8 @@ async def main():
                                     "timeframe": timeframe,
                                     "entry_time_str": entry_time_str,
                                     "expiry_time": expiry_time,
-                                    "channel_id": target_channel
+                                    "channel_id": target_channel,
+                                    "is_martingale": False
                                 })
 
                             except Exception as e:
