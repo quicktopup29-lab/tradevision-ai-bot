@@ -8,15 +8,14 @@ from telegram import Bot
 
 # ================= CONFIGURATION =================
 TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
-FREE_CHANNEL_ID = "@tradevision_ai_signals"  # রেগুলার সিগন্যাল (1M + 5M)
-VIP_CHANNEL_ID = "@tradevision_vip_signals"  # হাই-কোয়ালিটি শিওরশট (1M + 5M)
+FREE_CHANNEL_ID = "@tradevision_ai_signals"  
+VIP_CHANNEL_ID = "@tradevision_vip_signals"  
 API_KEY = "c1ec4ef642224321b031cf3068178289"
 
 bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
 CSV_FILE = "cross_tier_signals.csv"
 
-# ডুপ্লিকেট ফিল্টার ট্র্যাকার
 last_signals = {
     "FREE_1M": {}, "FREE_5M": {},
     "VIP_1M": {}, "VIP_5M": {}
@@ -147,14 +146,12 @@ def analyze_market(symbol, timeframe):
         score = 0
         direction = None
 
-        # 📈 BUY লজিক
         if current_price > ema200:
             if ema9 > ema21: score += 30
             if current_price <= lower_bb.iloc[-1]: score += 35
             if rsi_val < 35 or (last_rsi < 30 and rsi_val > 30): score += 35
             direction = "BUY"
 
-        # 📉 SELL লজিক
         elif current_price < ema200:
             if ema9 < ema21: score += 30
             if current_price >= upper_bb.iloc[-1]: score += 35
@@ -163,7 +160,6 @@ def analyze_market(symbol, timeframe):
 
         if not direction or score < 40: return None
 
-        # 💎 স্কোর অনুযায়ী গ্রেড এবং রাউটিং ফিল্টার
         if score >= 85:
             tier = "VIP"
             confidence = min(98, score + 10)
@@ -191,7 +187,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
     else:
         header = f"📡 **TRADEVISION AI → FREE SIGNAL** 📡"
         strategy = "Alpha Momentum Scalping"
-        conf_label = f"`{confidence:.0f}%` ⚡"
+        conf_label = f"`–` ⚡"  # ফ্রি চ্যানেলে কনফিডেন্স হাইড করা হয়েছে প্রিমিয়াম লুকের জন্য
 
     return f"""{header}
 ╔═══════════════════════════╗
@@ -206,7 +202,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v7.5*"""
+🤖 *Powered by TradeVision Pro Engine v7.6*"""
 
 
 def format_stats_message():
@@ -230,7 +226,7 @@ def format_stats_message():
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI MULTI-TIER ENGINE v7.5 STARTED...")
+    print("🚀 TRADEVISION AI MULTI-TIER ENGINE v7.6 STARTED (RATE-LIMIT PROTECTED)...")
 
     while True:
         try:
@@ -247,7 +243,9 @@ async def main():
                 continue
 
             # --- PROCESS MARKET TIME_FRAMES ---
-            for timeframe in ["5min", "1min"]:  # প্রথমে ৫ মিনিট, তারপর ১ মিনিট চেক করবে
+            # টোটাল ৮টি কল (৪ পেয়ার × ২ টাইমফ্রেম) যেন ঠিক ৬০ সেকেন্ডের মধ্যে ভাগ হয়ে যায়
+            # তাই প্রতি কলের মাঝে স্লিপ বাড়িয়ে ৭.৫ সেকেন্ড করা হলো (৮ × ৭.৫ = ৬০ সেকেন্ড)
+            for timeframe in ["5min", "1min"]:
                 for pair in pairs:
                     print(f"🔍 Analyzing {pair} ({timeframe})...")
                     res = analyze_market(pair, timeframe)
@@ -255,17 +253,16 @@ async def main():
                     if res:
                         signal = res["signal"]
                         confidence = res["confidence"]
-                        tier = res["tier"]  # 'FREE' বা 'VIP'
+                        tier = res["tier"]
                         
-                        # ইউনিক ট্র্যাকিং কী (যেমন: FREE_1M, VIP_5M)
                         filter_key = f"{tier}_{timeframe.upper()}"
 
-                        # ডুপ্লিকেট সিগন্যাল ফিল্টার চেক
                         if last_signals[filter_key].get(pair) == signal:
                             print(f"❌ Skip Duplicate ({filter_key}): {pair} -> {signal}")
+                            # ডুপ্লিকেট হলেও আমরা স্লিপ করব যাতে স্পিড ব্যালেন্স থাকে
+                            await asyncio.sleep(7.5)
                             continue
 
-                        # টাইমফ্রেম অনুযায়ী এন্ট্রি টাইম ক্যালকুলেশন
                         if timeframe == "5min":
                             current_minute = now_bd.minute
                             remainder = current_minute % 5
@@ -275,8 +272,6 @@ async def main():
                             entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
 
                         msg = format_telegram_message(pair, signal, confidence, entry_time, timeframe, tier)
-
-                        # স্মার্ট ডাইনামিক রাউটিং (চ্যানেল সিলেকশন)
                         target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
                         
                         try:
@@ -287,7 +282,8 @@ async def main():
                         except Exception as e:
                             print(f"❌ Telegram Send Error for {filter_key}: {e}")
 
-                    await asyncio.sleep(2)  # এপিআই রেট লিমিট প্রটেকশন
+                    # ⏳ ফ্রি প্ল্যান প্রটেকশন: প্রতি রিকোয়েস্টের পর ৭.৫ সেকেন্ড বিরতি
+                    await asyncio.sleep(7.5)
 
             if now_bd.minute == 0:
                 stats_msg = format_stats_message()
@@ -297,7 +293,9 @@ async def main():
                 except: pass
 
             print("⏳ Cycle Finished. Waiting for next candle...\n")
-            await asyncio.sleep(30)
+            # যেহেতু লুপের ভেতরেই আমাদের ৬০ সেকেন্ড পার হয়ে যাচ্ছে, তাই এখানে বড় বিরতির দরকার নেই। 
+            # শুধু ঘড়ির কাঁটা ঘোরার জন্য ৫ সেকেন্ড বাফার দেওয়া হলো।
+            await asyncio.sleep(5)
 
         except Exception as main_err:
             print(f"🔥 CRASH PROTECTED: {main_err}. Re-initializing in 30s...")
