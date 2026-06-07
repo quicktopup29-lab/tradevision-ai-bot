@@ -15,9 +15,10 @@ bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
 CSV_FILE = "cross_tier_signals.csv"
 
+# 🚀 KEY FIX: ডিকশনারির নাম 1MIN এবং 5MIN করা হলো যাতে লুপের সাথে নিখুঁত ম্যাচ হয়
 last_signals = {
-    "FREE_1M": {}, "FREE_5M": {},
-    "VIP_1M": {}, "VIP_5M": {}
+    "FREE_1MIN": {}, "FREE_5MIN": {},
+    "VIP_1MIN": {}, "VIP_5MIN": {}
 }
 stats = {"total": 0, "wins": 0, "losses": 0}
 
@@ -63,7 +64,7 @@ def update_statistics():
         print(f"⚠️ Stats Update Error: {e}")
 
 
-# ================= YAHOO FINANCE DATA FETCH (FIXED) =================
+# ================= YAHOO FINANCE DATA FETCH =================
 def get_yf_market_data(symbol, interval):
     try:
         yf_symbol = symbol.replace("/", "") + "=X"
@@ -75,11 +76,9 @@ def get_yf_market_data(symbol, interval):
         if df.empty or len(df) < 50: 
             return None
 
-        # 🚀 𝗧𝘂𝗽𝗹𝗲/𝗠𝘂𝗹𝘁𝗶𝗜𝗻𝗱𝗲𝘅 𝗖𝗼𝗹𝘂𝗺𝗻𝘀 𝗙𝗶𝘅: কলামগুলোকে প্লেইন টেক্সটে কনভার্ট করা হচ্ছে
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
         
-        # কলামের নাম সব ছোট হাতের অক্ষরে রূপান্তর
         df.columns = [str(col).lower() for col in df.columns]
         
         return df
@@ -186,7 +185,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v9.1 (Fixed Mode)*"""
+🤖 *Powered by TradeVision Pro Engine v9.2*"""
 
 
 def format_stats_message():
@@ -210,7 +209,7 @@ def format_stats_message():
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.1 STARTED (POWERED BY YFINANCE)...")
+    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.2 STARTED (POWERED BY YFINANCE)...")
 
     while True:
         try:
@@ -230,7 +229,7 @@ async def main():
                         signal = res["signal"]
                         confidence = res["confidence"]
                         tier = res["tier"]
-                        filter_key = f"{tier}_{timeframe.upper()}"
+                        filter_key = f"{tier}_{timeframe.upper()}"  # FREE_1MIN, VIP_5MIN ইত্যাদি জেনারেট হবে
 
                         if last_signals[filter_key].get(pair) != signal:
                             if timeframe == "5min":
