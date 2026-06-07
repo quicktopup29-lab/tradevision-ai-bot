@@ -15,53 +15,15 @@ bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
 CSV_FILE = "cross_tier_signals.csv"
 
-# 🚀 KEY FIX: ডিকশনারির নাম 1MIN এবং 5MIN করা হলো যাতে লুপের সাথে নিখুঁত ম্যাচ হয়
 last_signals = {
     "FREE_1MIN": {}, "FREE_5MIN": {},
     "VIP_1MIN": {}, "VIP_5MIN": {}
 }
+
+# একটি গ্লোবাল লিস্ট পেন্ডিং রেজাল্ট ট্র্যাক করার জন্য
+pending_results = []
+
 stats = {"total": 0, "wins": 0, "losses": 0}
-
-
-# ================= SIGNAL HISTORY SAVER =================
-def save_signal_to_csv(pair, signal, confidence, timeframe, tier):
-    try:
-        now_bd = datetime.now(bd_tz)
-        date_str = now_bd.strftime("%Y-%m-%d")
-        time_str = now_bd.strftime("%H:%M:%S")
-
-        new_data = pd.DataFrame([
-            {
-                "Date": date_str,
-                "Time": time_str,
-                "Pair": pair,
-                "Signal": signal,
-                "Confidence": f"{confidence:.0f}%",
-                "Timeframe": timeframe,
-                "Tier": tier
-            }
-        ])
-
-        if not os.path.isfile(CSV_FILE):
-            new_data.to_csv(CSV_FILE, index=False)
-        else:
-            new_data.to_csv(CSV_FILE, mode="a", header=False, index=False)
-    except Exception as e:
-        print(f"⚠️ CSV History Save Error: {e}")
-
-
-# ================= WIN RATE TRACKER UPDATE =================
-def update_statistics():
-    try:
-        if os.path.isfile(CSV_FILE):
-            df = pd.read_csv(CSV_FILE)
-            total = len(df)
-            if total > 0:
-                stats["total"] = total
-                stats["wins"] = int(total * 0.86)
-                stats["losses"] = total - stats["wins"]
-    except Exception as e:
-        print(f"⚠️ Stats Update Error: {e}")
 
 
 # ================= YAHOO FINANCE DATA FETCH =================
@@ -80,7 +42,6 @@ def get_yf_market_data(symbol, interval):
             df.columns = [col[0] for col in df.columns]
         
         df.columns = [str(col).lower() for col in df.columns]
-        
         return df
     except Exception as e:
         print(f"❌ Yahoo Finance Fetch Error for {symbol} ({interval}): {e}")
@@ -116,7 +77,6 @@ def analyze_market(symbol, timeframe):
 
     try:
         close = df["close"]
-        
         available_len = len(close)
         ema_long_period = 200 if available_len >= 200 else 50
         
@@ -148,16 +108,16 @@ def analyze_market(symbol, timeframe):
         if not direction or score < 40: return None
 
         if score >= 85:
-            return {"signal": direction, "confidence": min(98, score + 10), "tier": "VIP"}
+            return {"signal": direction, "confidence": min(98, score + 10), "tier": "VIP", "entry_price": current_price}
         else:
-            return {"signal": direction, "confidence": min(84, score + 15), "tier": "FREE"}
+            return {"signal": direction, "confidence": min(84, score + 15), "tier": "FREE", "entry_price": current_price}
 
     except Exception as e:
         print(f"❌ Engine Error for {symbol} ({timeframe}): {e}")
         return None
 
 
-# ================= TELEGRAM PREMIUM FORMATTING =================
+# ================= TELEGRAM MESSAGE FORMATTING =================
 def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, tier):
     dir_emoji = "🟢" if signal == "BUY" else "🔴"
     dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
@@ -185,31 +145,68 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v9.2*"""
+🤖 *Powered by TradeVision Pro Engine v10.0*"""
 
 
-def format_stats_message():
-    update_statistics()
-    total = stats["total"] if stats["total"] > 0 else 25
-    wins = stats["wins"] if stats["total"] > 0 else 22
-    losses = stats["losses"] if stats["total"] > 0 else 3
-    win_rate = (wins / total) * 100 if total > 0 else 88
+# ================= AUTO RESULT CHECKER ENGINE =================
+async def check_pending_results():
+    global pending_results
+    now_bd = datetime.now(bd_tz)
+    still_pending = []
 
-    return f"""📊 **TRADEVISION AI - PERFORMANCE REPORT**
+    for item in pending_results:
+        # এক্সপায়ারি টাইমের পর আরও ৩০ সেকেন্ড বাফার দেওয়া হলো সেফটি ডেটার জন্য
+        if now_bd >= (item["expiry_time"] + timedelta(seconds=30)):
+            print(f"🔄 Checking Result for {item['pair']} ({item['timeframe']})...")
+            df = get_yf_market_data(item["pair"], item["timeframe"])
+            
+            if df is not None:
+                try:
+                    # এক্সপায়ারড হওয়া ক্যান্ডেলের ক্লোজ প্রাইস নেওয়া
+                    current_close = df["close"].iloc[-1]
+                    entry_price = item["entry_price"]
+                    signal = item["signal"]
+                    
+                    # উইন-লস ক্যালকুলেশন লজিক
+                    is_win = False
+                    if signal == "BUY" and current_close > entry_price:
+                        is_win = True
+                    elif signal == "SELL" and current_close < entry_price:
+                        is_win = True
+
+                    # মেসেজ ফরম্যাট
+                    status_emoji = "✅✅ IT'S A WIN!! ✅✅" if is_win else "❌ LOSS ❌"
+                    result_text = f"""📊 **TRADEVISION AI → RESULT UPDATE**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 Total Signals : `{total}`
-✅ Total Wins    : `{wins}`
-❌ Total Losses  : `{losses}`
+🔹 **Asset Pair :** `{item['pair']}`
+⏰ **Signal Time :** `{item['entry_time_str']}` ({item['timeframe']})
+🎯 **Direction  :** `{signal}`
 
-📈 **Overall Win Rate :** `{win_rate:.0f}%`
+💵 **Entry Price :** `{entry_price:.5f}`
+📉 **Expiry Price :** `{current_close:.5f}`
+
+🏆 **RESULT :** {status_emoji}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+                    # টেলিগ্রামে রেজাল্ট পাঠানো
+                    await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
+                    print(f"📊 RESULT SENT: {item['pair']} -> {'WIN' if is_win else 'LOSS'}")
+                    
+                except Exception as res_err:
+                    print(f"❌ Error parsing result for {item['pair']}: {res_err}")
+                    still_pending.append(item) # এরর হলে পরের লুপে আবার ট্রাই করবে
+            else:
+                still_pending.append(item)
+        else:
+            still_pending.append(item)
+
+    pending_results = still_pending
 
 
 # ================= MAIN ENGINE LOOP =================
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI UNLIMITED ENGINE v9.2 STARTED (POWERED BY YFINANCE)...")
+    print("🚀 TRADEVISION AI UNLIMITED ENGINE v10.0 STARTED (AUTO-RESULT MODE)...")
 
     while True:
         try:
@@ -220,47 +217,61 @@ async def main():
                 await asyncio.sleep(3600)
                 continue
 
+            # প্রতি লুপের শুরুতে পেন্ডিং রেজাল্টগুলো আগে চেক হবে
+            await check_pending_results()
+
             for timeframe in ["5min", "1min"]:
                 for pair in pairs:
-                    print(f"🔍 Analyzing {pair} ({timeframe})...")
                     res = analyze_market(pair, timeframe)
 
                     if res:
                         signal = res["signal"]
                         confidence = res["confidence"]
                         tier = res["tier"]
-                        filter_key = f"{tier}_{timeframe.upper()}"  # FREE_1MIN, VIP_5MIN ইত্যাদি জেনারেট হবে
+                        entry_price = res["entry_price"]
+                        filter_key = f"{tier}_{timeframe.upper()}"
 
                         if last_signals[filter_key].get(pair) != signal:
+                            # টাইম ক্যালকুলেশন
                             if timeframe == "5min":
                                 current_minute = now_bd.minute
                                 remainder = current_minute % 5
                                 minutes_to_add = 5 - remainder
-                                entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
+                                duration = 5
+                                run_time = now_bd + timedelta(minutes=minutes_to_add)
                             else:
-                                entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
+                                duration = 1
+                                run_time = now_bd + timedelta(minutes=1)
 
-                            msg = format_telegram_message(pair, signal, confidence, entry_time, timeframe, tier)
+                            entry_time_str = run_time.strftime("%H:%M")
+                            expiry_time = run_time + timedelta(minutes=duration)
+
+                            msg = format_telegram_message(pair, signal, confidence, entry_time_str, timeframe, tier)
                             target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
                             
                             try:
+                                # সিগন্যাল পাঠানো
                                 await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                                save_signal_to_csv(pair, signal, confidence, timeframe, tier)
                                 last_signals[filter_key][pair] = signal
-                                print(f"✅ [{timeframe.upper()}] {filter_key} SIGNAL SENT: {pair}")
+                                print(f"✅ [{timeframe.upper()}] SIGNAL SENT: {pair}")
+
+                                # রেজাল্ট ট্র্যাকিং লিস্টে এড করা
+                                pending_results.append({
+                                    "pair": pair,
+                                    "signal": signal,
+                                    "entry_price": entry_price,
+                                    "timeframe": timeframe,
+                                    "entry_time_str": entry_time_str,
+                                    "expiry_time": expiry_time,
+                                    "channel_id": target_channel
+                                })
+
                             except Exception as e:
                                 print(f"❌ Telegram Send Error: {e}")
                     
                     await asyncio.sleep(1)
 
-            if now_bd.minute == 0:
-                stats_msg = format_stats_message()
-                try:
-                    await bot.send_message(chat_id=FREE_CHANNEL_ID, text=stats_msg, parse_mode="Markdown")
-                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=stats_msg, parse_mode="Markdown")
-                except: pass
-
-            print("⏳ Cycle Finished. Waiting 60 seconds for next candle...\n")
+            print("⏳ Cycle Finished. Waiting 60 seconds...\n")
             await asyncio.sleep(60)
 
         except Exception as main_err:
@@ -268,6 +279,5 @@ async def main():
             await asyncio.sleep(30)
 
 
-# ================= RUN ENGINE =================
 if __name__ == "__main__":
     asyncio.run(main())
