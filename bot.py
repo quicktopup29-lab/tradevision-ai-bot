@@ -64,10 +64,9 @@ def update_statistics():
         print(f"⚠️ Stats Update Error: {e}")
 
 
-# ================= BATCH MARKET DATA FETCH (1 Call for All Pairs) =================
+# ================= BATCH MARKET DATA FETCH =================
 def get_batch_market_data(pairs_list, interval):
     try:
-        # ৪টি পেয়ারকে কমা দিয়ে একসাথে এপিআই-তে পাঠানো হচ্ছে (১টি ক্রেডিট খরচ হবে)
         symbol_string = ",".join(pairs_list)
         url = "https://api.twelvedata.com/time_series"
         params = {
@@ -188,7 +187,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v8.0*"""
+🤖 *Powered by TradeVision Pro Engine v8.5*"""
 
 
 def format_stats_message():
@@ -210,9 +209,10 @@ def format_stats_message():
 
 # ================= MAIN ENGINE LOOP =================
 async def main():
-    pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
+    # ৩টি হাই-ভলিউম কারেন্সি পেয়ার (ফ্রি এপিআই লিমিট প্রটেক্টেড)
+    pairs = ["EUR/USD", "GBP/USD", "USD/JPY"]
 
-    print("🚀 TRADEVISION AI BATCH ENGINE v8.0 STARTED (ANTI-RATE-LIMIT)...")
+    print("🚀 TRADEVISION AI SAFE ENGINE v8.5 STARTED (3-PAIR MAX STABILITY)...")
 
     while True:
         try:
@@ -227,15 +227,16 @@ async def main():
                 await asyncio.sleep(3600)
                 continue
 
-            # ─── ১. ৫ মিনিটের টাইমফ্রেম প্রসেসিং (মাত্র ১টি এপিআই কল!) ───
+            # ─── ১. ৫ মিনিটের টাইমফ্রেম প্রসেসিং (৩টি পেয়ার একসাথে) ───
             print("\n📥 Fetching Batch Data for 5-Min Timeframe...")
             batch_data_5m = get_batch_market_data(pairs, "5min")
             
-            if batch_data_5m:
+            if batch_data_5m and isinstance(batch_data_5m, dict):
                 for pair in pairs:
-                    # ব্যাচ ডেটা থেকে নির্দিষ্ট পেয়ারের ডেটা আলাদা করা
-                    pair_data = batch_data_5m.get(pair) if len(pairs) > 1 else batch_data_5m
-                    if not pair_data or "values" not in pair_data: continue
+                    # যদি ডেটায় সিঙ্গেল ডিকশনারি বা সরাসরি পেয়ার কি (Key) না থাকে, তার সেফটি হ্যান্ডলিং
+                    pair_data = batch_data_5m.get(pair) if "values" not in batch_data_5m else batch_data_5m
+                    if not pair_data or not isinstance(pair_data, dict) or "values" not in pair_data: 
+                        continue
 
                     res = process_indicators_and_score(pair_data["values"])
                     if res:
@@ -261,17 +262,18 @@ async def main():
                             except Exception as e:
                                 print(f"❌ Telegram Send Error: {e}")
 
-            # ২ সেকেন্ড বাফার বিরতি
-            await asyncio.sleep(2)
+            # ৫ সেকেন্ড সেফটি বাফার
+            await asyncio.sleep(5)
 
-            # ─── ২. ১ মিনিটের টাইমফ্রেম প্রসেসিং (মাত্র ১টি এপিআই কল!) ───
+            # ─── ২. ১ মিনিটের টাইমফ্রেম প্রসেসিং (৩টি পেয়ার একসাথে) ───
             print("📥 Fetching Batch Data for 1-Min Timeframe...")
             batch_data_1m = get_batch_market_data(pairs, "1min")
             
-            if batch_data_1m:
+            if batch_data_1m and isinstance(batch_data_1m, dict):
                 for pair in pairs:
-                    pair_data = batch_data_1m.get(pair) if len(pairs) > 1 else batch_data_1m
-                    if not pair_data or "values" not in pair_data: continue
+                    pair_data = batch_data_1m.get(pair) if "values" not in batch_data_1m else batch_data_1m
+                    if not pair_data or not isinstance(pair_data, dict) or "values" not in pair_data: 
+                        continue
 
                     res = process_indicators_and_score(pair_data["values"])
                     if res:
