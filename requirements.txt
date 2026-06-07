@@ -4,3 +4,5 @@ pandas==2.2.3
 ta==0.11.0
 python-dotenv==1.0.1
 numpy==2.1.1
+yfinance
+pytz
