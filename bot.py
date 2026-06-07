@@ -187,7 +187,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
     else:
         header = f"📡 **TRADEVISION AI → FREE SIGNAL** 📡"
         strategy = "Alpha Momentum Scalping"
-        conf_label = f"`–` ⚡"  # ফ্রি চ্যানেলে কনফিডেন্স হাইড করা হয়েছে প্রিমিয়াম লুকের জন্য
+        conf_label = f"`–` ⚡"  
 
     return f"""{header}
 ╔═══════════════════════════╗
@@ -202,7 +202,7 @@ def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, t
 ⚡ *Confidence :* {conf_label}
 
 🚀 **STATUS :** `ACTIVE`
-🤖 *Powered by TradeVision Pro Engine v7.6*"""
+🤖 *Powered by TradeVision Pro Engine v7.7*"""
 
 
 def format_stats_message():
@@ -226,7 +226,7 @@ def format_stats_message():
 async def main():
     pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD"]
 
-    print("🚀 TRADEVISION AI MULTI-TIER ENGINE v7.6 STARTED (RATE-LIMIT PROTECTED)...")
+    print("🚀 TRADEVISION AI MULTI-TIER ENGINE v7.7 STARTED (STRICT RATE-LIMIT ISOLATION)...")
 
     while True:
         try:
@@ -242,49 +242,70 @@ async def main():
                 await asyncio.sleep(3600)
                 continue
 
-            # --- PROCESS MARKET TIME_FRAMES ---
-            # টোটাল ৮টি কল (৪ পেয়ার × ২ টাইমফ্রেম) যেন ঠিক ৬০ সেকেন্ডের মধ্যে ভাগ হয়ে যায়
-            # তাই প্রতি কলের মাঝে স্লিপ বাড়িয়ে ৭.৫ সেকেন্ড করা হলো (৮ × ৭.৫ = ৬০ সেকেন্ড)
-            for timeframe in ["5min", "1min"]:
-                for pair in pairs:
-                    print(f"🔍 Analyzing {pair} ({timeframe})...")
-                    res = analyze_market(pair, timeframe)
+            # ─── ১. প্রথমে শুধু ৫ মিনিটের টাইমফ্রেম চেক (৪টি কল) ───
+            print("\n⏱️ --- STARTING 5-MIN TIMEFRAME CYCLE ---")
+            for pair in pairs:
+                print(f"🔍 Analyzing {pair} (5min)...")
+                res = analyze_market(pair, "5min")
 
-                    if res:
-                        signal = res["signal"]
-                        confidence = res["confidence"]
-                        tier = res["tier"]
-                        
-                        filter_key = f"{tier}_{timeframe.upper()}"
+                if res:
+                    signal = res["signal"]
+                    confidence = res["confidence"]
+                    tier = res["tier"]
+                    filter_key = f"{tier}_5M"
 
-                        if last_signals[filter_key].get(pair) == signal:
-                            print(f"❌ Skip Duplicate ({filter_key}): {pair} -> {signal}")
-                            # ডুপ্লিকেট হলেও আমরা স্লিপ করব যাতে স্পিড ব্যালেন্স থাকে
-                            await asyncio.sleep(7.5)
-                            continue
+                    if last_signals[filter_key].get(pair) != signal:
+                        current_minute = now_bd.minute
+                        remainder = current_minute % 5
+                        minutes_to_add = 5 - remainder
+                        entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
 
-                        if timeframe == "5min":
-                            current_minute = now_bd.minute
-                            remainder = current_minute % 5
-                            minutes_to_add = 5 - remainder
-                            entry_time = (now_bd + timedelta(minutes=minutes_to_add)).strftime("%H:%M")
-                        else:
-                            entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
-
-                        msg = format_telegram_message(pair, signal, confidence, entry_time, timeframe, tier)
+                        msg = format_telegram_message(pair, signal, confidence, entry_time, "5min", tier)
                         target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
                         
                         try:
                             await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
-                            save_signal_to_csv(pair, signal, confidence, timeframe, tier)
+                            save_signal_to_csv(pair, signal, confidence, "5min", tier)
                             last_signals[filter_key][pair] = signal
-                            print(f"✅ {filter_key} SIGNAL SENT: {pair} ({signal})")
+                            print(f"✅ {filter_key} SIGNAL SENT: {pair}")
                         except Exception as e:
-                            print(f"❌ Telegram Send Error for {filter_key}: {e}")
+                            print(f"❌ Telegram Send Error: {e}")
 
-                    # ⏳ ফ্রি প্ল্যান প্রটেকশন: প্রতি রিকোয়েস্টের পর ৭.৫ সেকেন্ড বিরতি
-                    await asyncio.sleep(7.5)
+                await asyncio.sleep(10) # ৪টি কলের মাঝে ১০ সেকেন্ড করে মোট ৪০ সেকেন্ড গ্যাপ।
 
+            # 🛡️ ৫ মিনিট শেষ করে ১ মিনিটের লুপে যাওয়ার আগে ৩০ সেকেন্ডের একটি সলিড বিরতি (যাতে মিনিট ক্লিন হয়ে যায়)
+            print("⏳ 5-Min Cycle Done. Cooldown for 30s to reset API Limit...")
+            await asyncio.sleep(30)
+
+            # ─── ২. তারপর শুধু ১ মিনিটের টাইমফ্রেম চেক (৪টি কল) ───
+            print("\n⏱️ --- STARTING 1-MIN TIMEFRAME CYCLE ---")
+            for pair in pairs:
+                print(f"🔍 Analyzing {pair} (1min)...")
+                res = analyze_market(pair, "1min")
+
+                if res:
+                    signal = res["signal"]
+                    confidence = res["confidence"]
+                    tier = res["tier"]
+                    filter_key = f"{tier}_1M"
+
+                    if last_signals[filter_key].get(pair) != signal:
+                        entry_time = (now_bd + timedelta(minutes=1)).strftime("%H:%M")
+
+                        msg = format_telegram_message(pair, signal, confidence, entry_time, "1min", tier)
+                        target_channel = VIP_CHANNEL_ID if tier == "VIP" else FREE_CHANNEL_ID
+                        
+                        try:
+                            await bot.send_message(chat_id=target_channel, text=msg, parse_mode="Markdown")
+                            save_signal_to_csv(pair, signal, confidence, "1min", tier)
+                            last_signals[filter_key][pair] = signal
+                            print(f"✅ {filter_key} SIGNAL SENT: {pair}")
+                        except Exception as e:
+                            print(f"❌ Telegram Send Error: {e}")
+
+                await asyncio.sleep(10) # ৪টি কলের মাঝে ১০ সেকেন্ড করে মোট ৪০ সেকেন্ড গ্যাপ।
+
+            # Hourly Stats
             if now_bd.minute == 0:
                 stats_msg = format_stats_message()
                 try:
@@ -292,10 +313,8 @@ async def main():
                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=stats_msg, parse_mode="Markdown")
                 except: pass
 
-            print("⏳ Cycle Finished. Waiting for next candle...\n")
-            # যেহেতু লুপের ভেতরেই আমাদের ৬০ সেকেন্ড পার হয়ে যাচ্ছে, তাই এখানে বড় বিরতির দরকার নেই। 
-            # শুধু ঘড়ির কাঁটা ঘোরার জন্য ৫ সেকেন্ড বাফার দেওয়া হলো।
-            await asyncio.sleep(5)
+            print("\n⏳ Full Cycle Finished. Cooling down for 30 seconds...\n")
+            await asyncio.sleep(30)
 
         except Exception as main_err:
             print(f"🔥 CRASH PROTECTED: {main_err}. Re-initializing in 30s...")
