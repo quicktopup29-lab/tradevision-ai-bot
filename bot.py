@@ -25,7 +25,7 @@ def get_live_candles(symbol, interval="1min"):
         yf_interval = "1m" if interval == "1min" else "5m"
         
         df = yf.download(tickers=yf_symbol, period="1d", interval=yf_interval, progress=False)
-        if df.empty or len(df) < 10: return None
+        if df.empty or len(df) < 15: return None
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
@@ -57,50 +57,105 @@ def analyze_market(symbol, timeframe):
 
         # 🟢 CALL / BUY STRATEGY
         if c1 > o1 and body1 > (avg_body * 1.1):
-            if c2 < o2 and c1 > o2 and o1 < c2: # Bullish Engulfing
+            if c2 < o2 and c1 > o2 and o1 < c2: 
                 direction = "BUY"
                 pattern_name = "Bullish Engulfing"
-            elif (h1 - c1) < (body1 * 0.1): # Strong Marubozu
+            elif (h1 - c1) < (body1 * 0.1): 
                 direction = "BUY"
                 pattern_name = "Marubozu Breakout"
 
         # 🔴 PUT / SELL STRATEGY
         elif c1 < o1 and body1 > (avg_body * 1.1):
-            if c2 > o2 and c1 < o2 and o1 > c2: # Bearish Engulfing
+            if c2 > o2 and c1 < o2 and o1 > c2: 
                 direction = "SELL"
                 pattern_name = "Bearish Engulfing"
-            elif (c1 - l1) < (body1 * 0.1): # Strong Marubozu
+            elif (c1 - l1) < (body1 * 0.1): 
                 direction = "SELL"
                 pattern_name = "Marubozu Breakdown"
 
         if not direction: return None
         
-        # ওটিসি-তে এক্যুরেসির লেভেল লক করা হলো ৯৫%
         return {"signal": direction, "confidence": 95, "entry_price": c1, "pattern": pattern_name}
     except:
         return None
 
 # ================= TELEGRAM MESSAGE FORMATTING =================
-def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, pattern):
+def format_telegram_message(symbol, signal, confidence, entry_time, timeframe, pattern, is_martingale=False):
     dir_emoji = "🟢" if signal == "BUY" else "🔴"
     dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
     exp_text = "1 Minute" if timeframe == "1min" else "5 Minutes"
     
-    # মেম্বারদের আকর্ষিত করতে ওটিসি ফরম্যাটে মেসেজ জেনারেট হবে
+    m_header = "⚠️ [MARTINGALE M1] " if is_martingale else ""
     clean_pair = symbol.replace("/", "") + "-OTC"
     
-    return f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
+    return f"""{m_header}💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
 ╔═══════════════════════════╗
   📊 **Asset Pair :** `{clean_pair}`
   {dir_emoji} **Direction  :** `{dir_text}`
   
   ⏰ **Entry Time :** `{entry_time}` (GMT+6)
   ⏳ **Expiry     :** `{exp_text}`
-  📈 **Entry Type :** `Next Candle / M1`
+  📈 **Entry Type :** `{"Martingale Candle" if is_martingale else "Next Candle"}`
 ╚═══════════════════════════╝
 🎯 **Pattern :** `{pattern}`
 🔥 **Accuracy Locked :** `{confidence}% SURE-SHOT`
-🤖 *Powered by TradeVision Pro Engine v12.5*"""
+🤖 *Powered by TradeVision Pro Engine v12.6*"""
+
+# ================= AUTOMATIC RESULT & MARTINGALE ENGINE =================
+async def check_pending_results():
+    global pending_results
+    now_bd = datetime.now(bd_tz)
+    still_pending = []
+
+    for item in pending_results:
+        if "attempt" not in item: item["attempt"] = 0
+
+        # রেজাল্ট চেক করার বাফার টাইম লক
+        buffer = 15 if item["timeframe"] == "1min" else 30
+        if now_bd >= (item["expiry_time"] + timedelta(seconds=buffer)):
+            item["attempt"] += 1
+            print(f"🔄 Checking Result for {item['pair']} ({item['timeframe']}) | Attempt: {item['attempt']}...")
+            
+            df = get_live_candles(item["pair"], item["timeframe"])
+            if df is not None:
+                try:
+                    current_close = df["close"].iloc[-1]
+                    entry_price = item["entry_price"]
+                    signal = item["signal"]
+                    
+                    is_win = (signal == "BUY" and current_close > entry_price) or (signal == "SELL" and current_close < entry_price)
+
+                    if is_win:
+                        msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
+                        result_text = f"📊 **TRADEVISION AI → RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair'].replace('/', '')}-OTC`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
+                    else:
+                        if not item["is_martingale"]:
+                            m_duration = 1 if item["timeframe"] == "1min" else 5
+                            m_run_time = now_bd
+                            m_entry_str = m_run_time.strftime("%H:%M")
+                            m_expiry = m_run_time + timedelta(minutes=m_duration)
+
+                            m_alert = f"⚠️ **{item['pair'].replace('/', '')}-OTC Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
+                            await bot.send_message(chat_id=item["channel_id"], text=m_alert, parse_mode="Markdown")
+
+                            still_pending.append({
+                                "pair": item["pair"], "signal": signal, "entry_price": current_close,
+                                "timeframe": item["timeframe"], "entry_time_str": m_entry_str, 
+                                "expiry_time": m_expiry, "channel_id": item["channel_id"], 
+                                "is_martingale": True, "attempt": 0, "pattern": item["pattern"]
+                            })
+                        else:
+                            result_text = f"📊 **TRADEVISION AI → RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair'].replace('/', '')}-OTC`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            await bot.send_message(chat_id=item["channel_id"], text=result_text, parse_mode="Markdown")
+                except Exception as e:
+                    if item["attempt"] < 3: still_pending.append(item)
+            else:
+                if item["attempt"] < 3: still_pending.append(item)
+        else:
+            still_pending.append(item)
+
+    pending_results = still_pending
 
 # ================= AUTOMATIC FIXED DAILY SESSION CARD =================
 async def send_auto_bulk_session():
@@ -138,14 +193,13 @@ async def send_auto_bulk_session():
 async def main():
     global session_sent_today
     
-    # 🚀 ১২টি হাই-ভলিউম কারেন্সি পেয়ারের আল্ট্রা-লিস্ট
     pairs = [
         "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", 
         "USD/INR", "NZD/CHF", "USD/MXN", "CAD/CHF",
         "USD/DZD", "USD/PHP", "USD/EGP", "LTC/USD"
     ]
     
-    print("🚀 HIGH-ACCURACY MULTI-PAIR ENGINE v12.5 STARTED...")
+    print("🚀 HIGH-ACCURACY AUTO-RESULT ENGINE v12.6 STARTED...")
 
     for p in pairs:
         last_signals[f"VIP_1MIN_{p}"] = None
@@ -167,6 +221,9 @@ async def main():
             if now_bd.hour == 0 and now_bd.minute == 5:
                 session_sent_today = False
 
+            # পেন্ডিং রেজাল্ট চেক করা হচ্ছে
+            await check_pending_results()
+
             # মাল্টি-কারেন্সি স্ক্যানার
             for timeframe in ["1min", "5min"]:
                 for pair in pairs:
@@ -176,24 +233,33 @@ async def main():
                         filter_key = f"VIP_{timeframe.upper()}_{pair}"
 
                         if last_signals.get(filter_key) != signal:
+                            duration = 5 if timeframe == "5min" else 1
                             run_time = now_bd + timedelta(minutes=1)
                             entry_time_str = run_time.strftime("%H:%M")
+                            expiry_time = run_time + timedelta(minutes=duration)
 
                             msg = format_telegram_message(
                                 pair, signal, res["confidence"], entry_time_str, timeframe, res["pattern"]
                             )
                             
                             try:
-                                # সব সিগন্যাল সরাসরি ভিআইপিতে যাবে সর্বোচ্চ সুরক্ষার জন্য
                                 await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
                                 last_signals[filter_key] = signal
-                                print(f"🎯 [95%] SENT: {pair} - {signal} ({timeframe})")
+                                print(f"🎯 SENT: {pair} - {signal} ({timeframe})")
+
+                                # রেজাল্ট ট্র্যাক করার জন্য ট্র্যাকিং ট্রিতে পুশ করা হলো
+                                pending_results.append({
+                                    "pair": pair, "signal": signal, "entry_price": res["entry_price"],
+                                    "timeframe": timeframe, "entry_time_str": entry_time_str, 
+                                    "expiry_time": expiry_time, "channel_id": VIP_CHANNEL_ID, 
+                                    "is_martingale": False, "attempt": 0, "pattern": res["pattern"]
+                                })
                             except Exception as e:
                                 print(f"❌ Telegram Error: {e}")
                 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
 
-            await asyncio.sleep(15) # ১৫ সেকেন্ড পর পর সুপার ফাস্ট লুপ রিফ্রেশ
+            await asyncio.sleep(20) 
 
         except Exception as main_err:
             print(f"🔥 Crash Avoided: {main_err}")
