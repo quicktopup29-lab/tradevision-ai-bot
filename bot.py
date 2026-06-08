@@ -85,7 +85,7 @@ def scan_and_generate_signal(pair):
 async def main_standalone_loop():
     global pending_results, session_sent_today, last_processed_minute
     
-    # LTC/USD বাদ দিয়ে একদম ফ্রেশ ও পারফেক্ট ১২টি পেয়ার লিস্ট করা হলো
+    # এরর দেওয়া LTC/USD বাদ দিয়ে USD/CAD যোগ করা হয়েছে
     pairs = [
         "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", 
         "USD/INR", "NZD/CHF", "USD/MXN", "CAD/CHF",
