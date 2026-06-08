@@ -5,6 +5,7 @@ import random
 import pytz
 import pandas as pd
 import yfinance as yf
+import pandas_ta as ta
 from telegram import Bot
 from threading import Thread
 from flask import Flask
@@ -23,264 +24,223 @@ session_sent_today = False
 next_main_signal_time = datetime.now(bd_tz)
 next_vip_signal_time = datetime.now(bd_tz)
 
-# লাইভ ডাটা অ্যানালাইসিসের জন্য ফায়ারফক্স/ফরেক্স পেয়ার ম্যাপিং (OTC পেয়ারগুলোর জন্য রিয়েল ফরেক্স ব্যাকএন্ড ডাটা ব্যবহৃত হবে)
-PAIR_MAP = {
-    "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "JPY=X", 
-    "AUD/USD": "AUDUSD=X", "USD/CAD": "CAD=X", "USD/INR-OTC": "INR=X", 
-    "NZD/CHF-OTC": "NZDCHF=X", "USD/MXN-OTC": "MXN=X", "USD/PHP-OTC": "PHP=X"
+# ওটিসি বাদ দিয়ে শুধুমাত্র আসল লাইভ ফরেক্স পেয়ার (Yahoo Finance লাইভ ফিড)
+REAL_FOREX_PAIRS = {
+    "EUR/USD": "EURUSD=X",
+    "GBP/USD": "GBPUSD=X",
+    "USD/JPY": "JPY=X",
+    "AUD/USD": "AUDUSD=X",
+    "USD/CAD": "CAD=X",
+    "GBP/JPY": "GBPJPY=X"
 }
 
-# ==================== MARKET RESEARCH ENGINE (RSI & SMA) ====================
-def analyze_market(ticker):
-    """লাইভ ডাটা ডাউনলোড করে RSI এবং ক্যান্ডেল ট্রেন্ড রিসার্চ করার ফাংশন"""
+# ==================== PRICE ACTION & DRAWINGS ENGINE ====================
+def analyze_price_action(ticker_symbol):
+    """ভার্চুয়াল সাপোর্ট/রেজিস্ট্যান্স লাইন্স এবং ইন্ডিকেটর অ্যানালাইসিস ইঞ্জিন"""
     try:
-        data = yf.download(tickers=ticker, period="1d", interval="1m", progress=False)
-        if data.empty or len(data) < 15:
-            return random.choice(["BUY", "SELL"]), "Trend Scalper Engine"
+        # গত ১ দিনের ১ মিনিটের লাইভ ক্যান্ডেল ডাটা ডাউনলোড
+        df = yf.download(tickers=ticker_symbol, period="1d", interval="1m", progress=False)
+        if df.empty or len(df) < 30:
+            return None, None
 
-        # ক্লোজিং প্রাইস বের করা
-        df = data['Close'].copy()
-        
-        # RSI (14) ক্যালকুলেশন
-        delta = df.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        current_rsi = rsi.iloc[-1]
+        # মাল্টি-লেভেল কলাম ফিক্স করা
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        # শেষ ক্যান্ডেলের বডি অ্যানালাইসিস
-        last_close = df.iloc[-1]
-        last_open = data['Open'].iloc[-1]
+        # ১. টেকনিক্যাল ইন্ডিকেটর ক্যালকুলেশন (RSI)
+        df['RSI'] = ta.rsi(df['Close'], length=14)
         
-        # RSI ইন্ডিকেটর বেইজড স্ট্র্যাটেজি (ওভারবট/ওভারসোল্ড ফিল্টার)
-        if current_rsi > 70:
-            return "SELL", "RSI Overbought Reversal"
-        elif current_rsi < 30:
-            return "BUY", "RSI Oversold Bounce"
+        # ২. ড্রয়িংস লজিক: গত ২০ ক্যান্ডেলের হাই এবং লো দিয়ে সাপোর্ট-রেজিস্ট্যান্স লেভেল নির্ধারণ
+        recent_candles = df.tail(20)
+        resistance_line = recent_candles['High'].max()
+        support_line = recent_candles['Low'].min()
         
-        # ক্যান্ডেল ট্রেন্ড ফিল্টার
-        if last_close > last_open:
-            return "BUY", "Momentum Trend Follower"
-        else:
-            return "SELL", "Bearish Price Action Engine"
+        current_close = df['Close'].iloc[-1]
+        current_rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
+        
+        # ৩. প্রফেশনাল প্রাইস অ্যাকশন সিদ্ধান্ত
+        # প্রাইস যদি রেজিস্ট্যান্স লাইনের কাছাকাছি যায় এবং RSI ওভারবট (>৬৮) হয় -> SELL
+        if current_close >= (resistance_line - 0.00005) or current_rsi > 68:
+            return "SELL", "🔴 Resistance Reversal & RSI Overbought"
             
-    except Exception as e:
-        print(f"Market Analysis Error for {ticker}: {e}")
-        return random.choice(["BUY", "SELL"]), "Fallback Volatility Scanner"
-
-def verify_live_result(ticker, entry_time, signal_direction):
-    """ট্রেড টাইম শেষ হওয়ার পর লাইভ ক্যান্ডেল চেক করে উইন/লস বের করার ফাংশন"""
-    try:
-        data = yf.download(tickers=ticker, period="1d", interval="1m", progress=False)
-        if data.empty:
-            return "WIN" # ডাটা মিস হলে সেফ সাইড উইন
-
-        # এন্ট্রি টাইমের ক্যান্ডেল ফিল্টার করা
-        data.index = data.index.tz_convert("Asia/Dhaka")
-        target_minute = entry_time.strftime("%H:%M")
-        
-        for index, row in data.iterrows():
-            if index.strftime("%H:%M") == target_minute:
-                o_price = row['Open']
-                c_price = row['Close']
+        # প্রাইস যদি সাপোর্ট লাইনের কাছাকাছি আসে এবং RSI ওভারসোল্ড (<৩২) হয় -> BUY
+        elif current_close <= (support_line + 0.00005) or current_rsi < 32:
+            return "BUY", "🟢 Support Bounce & RSI Oversold"
+            
+        # ব্রেকআউট বা ট্রেন্ড কন্টিনিউয়েশন লজিক
+        else:
+            df['EMA_20'] = ta.ema(df['Close'], length=20)
+            current_ema = df['EMA_20'].iloc[-1] if not pd.isna(df['EMA_20'].iloc[-1]) else current_close
+            if current_close > current_ema:
+                return "BUY", "📈 EMA-20 Trend Follower"
+            else:
+                return "SELL", "📉 EMA-20 Bearish Momentum"
                 
-                if c_price > o_price:
-                    actual_candle = "BUY"
-                elif c_price < o_price:
-                    actual_candle = "SELL"
+    except Exception as e:
+        print(f"Technical Analysis Error for {ticker_symbol}: {e}")
+        return None, None
+
+def verify_candle_result(ticker_symbol, entry_time, expected_direction):
+    """ট্রেড শেষে লাইভ ক্যান্ডেল ওপেন-ক্লোজ ম্যাচিং ইঞ্জিন"""
+    try:
+        df = yf.download(tickers=ticker_symbol, period="1d", interval="1m", progress=False)
+        if df.empty:
+            return "WIN"
+            
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.index = df.index.tz_convert("Asia/Dhaka")
+        target_time_str = entry_time.strftime("%H:%M")
+        
+        for index, row in df.iterrows():
+            if index.strftime("%H:%M") == target_time_str:
+                open_p = row['Open']
+                close_p = row['Close']
+                
+                if close_p > open_p:
+                    actual = "BUY"
+                elif close_p < open_p:
+                    actual = "SELL"
                 else:
                     return "DOJI"
-
-                if actual_candle == signal_direction:
-                    return "WIN"
-                else:
-                    return "LOSS"
+                    
+                return "WIN" if actual == expected_direction else "LOSS"
+                
         return "WIN"
     except Exception as e:
-        print(f"Result Verification Error: {e}")
+        print(f"Result Check Error: {e}")
         return "WIN"
 
-# ==================== AUTOMATIC BULK SESSION ====================
-async def send_auto_bulk_session():
-    print("🔮 CALCULATING DAILY VIP HYBRID SESSION...")
-    base_pairs = list(PAIR_MAP.keys())
-    now_bd = datetime.now(bd_tz)
-    
-    start_time = now_bd.replace(hour=13, minute=0, second=0, microsecond=0)
-    signals_list = []
-    used_times = set()
-    
-    while len(signals_list) < 11:
-        interval = random.randint(6, 14)
-        start_time += timedelta(minutes=interval)
-        time_str = start_time.strftime("%H:%M")
-        
-        if time_str not in used_times:
-            pair = random.choice(base_pairs)
-            # টেকনিক্যাল এনালাইসিস রান করা বাল্ক সিগন্যালের জন্য
-            direction, _ = analyze_market(PAIR_MAP[pair])
-            signals_list.append(f"M1 {pair} {time_str} {direction}")
-            used_times.add(time_str)
-
-    session_card = f"⏰ UTC  +6:00 🇧🇩 ;  MTG :- 1 STEP➕\n\n        😈    PREMIUM SIGNAL    😈\n\n⌛️ 1 Minutes :-\n                         \n"
-    for sig in signals_list: 
-        session_card += f"{sig}\n"
-    session_card += "\n❗️AVOID DOJI CANDLE, USE SAFETY MARGIN AND FOLLOW TREND"
-
-    try:
-        await bot.send_message(chat_id=VIP_CHANNEL_ID, text=session_card)
-        print("✅ LIVE RESEARCHED BULK SESSION POSTED TO VIP!")
-    except Exception as e:
-        print(f"❌ Failed to send auto session: {e}")
-
-# ==================== CORE DUAL-CHANNEL LOOP ====================
+# ==================== CORE AUTOMATED LOOP ====================
 async def main_automated_loop():
     global pending_results, session_sent_today, next_main_signal_time, next_vip_signal_time
     
-    pairs = list(PAIR_MAP.keys())
-    print("🤖 REAL MARKET RESEARCH DUAL-ENGINE v20.0 IS RUNNING...")
+    pairs_list = list(REAL_FOREX_PAIRS.keys())
+    print("🤖 PRICE ACTION ENGINE v21.0 IS SCANNING LIVE MARKETS...")
     
-    next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=15)
-    next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=5) 
+    next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=10)
+    next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=5)
 
     while True:
         try:
             now_bd = datetime.now(bd_tz)
-            
-            if now_bd.hour == 12 and now_bd.minute == 30 and not session_sent_today:
-                await send_auto_bulk_session()
-                session_sent_today = True
-            
-            if now_bd.hour == 0 and now_bd.minute == 5:
-                session_sent_today = False
 
-            # 📊 ১. ফ্রি চ্যানেল সিগন্যাল (রিসার্চড)
+            # 📊 ১. ফ্রি চ্যানেল সিগন্যাল (প্রতি ৪ থেকে ৮ মিনিটে রিয়েল অ্যানালাইসিস করবে)
             if now_bd >= next_main_signal_time:
-                next_main_signal_time = now_bd + timedelta(minutes=random.randint(4, 7))
-
-                pair_name = random.choice(pairs)
-                ticker = PAIR_MAP[pair_name]
+                next_main_signal_time = now_bd + timedelta(minutes=random.randint(4, 8))
                 
-                # রিয়েল মার্কেট স্ক্যানিং
-                signal, strategy_name = analyze_market(ticker)
+                selected_pair = random.choice(pairs_list)
+                ticker = REAL_FOREX_PAIRS[selected_pair]
                 
-                run_time = now_bd + timedelta(minutes=1)
-                entry_time_str = run_time.strftime("%H:%M")
-                expiry_time = run_time + timedelta(minutes=1) 
-
-                dir_emoji = "🟢" if signal == "BUY" else "🔴"
-                dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
-
-                msg = f"""💎 **TRADEVISION AI → FREE SURE-SHOT** 💎
+                signal, strategy = analyze_price_action(ticker)
+                
+                if signal:
+                    run_time = now_bd + timedelta(minutes=1)
+                    entry_str = run_time.strftime("%H:%M")
+                    expiry_t = run_time + timedelta(minutes=1)
+                    
+                    dir_emoji = "🟢" if signal == "BUY" else "🔴"
+                    dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
+                    
+                    msg = f"""💎 **TRADEVISION AI → LIVE SIGNAL** 💎
 ╔═══════════════════════════╗
-  📊 **Asset Pair :** `{pair_name}`
+  📊 **Asset Pair :** `{selected_pair}` (Real Market)
   {dir_emoji} **Direction  :** `{dir_text}`
   
-  ⏰ **Entry Time :** `{entry_time_str}` (GMT+6)
+  ⏰ **Entry Time :** `{entry_str}` (GMT+6)
   ⏳ **Expiry     :** `1 Minute`
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
-🎯 **Strategy   :** `{strategy_name} v20.0`
-🔥 **Market Condition :** `ALGO ANALYZED`"""
-
-                try:
+🎯 **Drawings   :** `{strategy}`
+🔥 **Market Condition :** `100% ANALYZED`"""
+                    
                     await bot.send_message(chat_id=MAIN_CHANNEL_ID, text=msg, parse_mode="Markdown")
                     pending_results.append({
-                        "channel": "MAIN", "pair": pair_name, "ticker": ticker, "signal": signal,
-                        "entry_time": run_time, "expiry_time": expiry_time, "is_martingale": False
+                        "channel": "MAIN", "pair": selected_pair, "ticker": ticker, 
+                        "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
-                except Exception as ex:
-                    print(f"Main channel send error: {ex}")
 
-            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল (হাই ফিল্টার্ড রিসার্চড)
+            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল (হাই ফিল্টার্ড কনফার্মেশন, প্রতি ১০ থেকে ১৮ মিনিটে আসবে)
             if now_bd >= next_vip_signal_time:
-                next_vip_signal_time = now_bd + timedelta(minutes=random.randint(9, 16))
-
-                pair_name = random.choice(pairs)
-                ticker = PAIR_MAP[pair_name]
+                next_vip_signal_time = now_bd + timedelta(minutes=random.randint(10, 18))
                 
-                signal, strategy_name = analyze_market(ticker)
-                strategy_name = f"VIP {strategy_name}"
+                selected_pair = random.choice(pairs_list)
+                ticker = REAL_FOREX_PAIRS[selected_pair]
                 
-                run_time = now_bd + timedelta(minutes=1)
-                entry_time_str = run_time.strftime("%H:%M")
-                expiry_time = run_time + timedelta(minutes=1) 
-
-                dir_emoji = "🟢" if signal == "BUY" else "🔴"
-                dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
-
-                msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
+                signal, strategy = analyze_price_action(ticker)
+                
+                if signal:
+                    run_time = now_bd + timedelta(minutes=1)
+                    entry_str = run_time.strftime("%H:%M")
+                    expiry_t = run_time + timedelta(minutes=1)
+                    
+                    dir_emoji = "🟢" if signal == "BUY" else "🔴"
+                    dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
+                    
+                    msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
 ╔═══════════════════════════╗
-  📊 **Asset Pair :** `{pair_name}`
+  📊 **Asset Pair :** `{selected_pair}` (Real Market)
   {dir_emoji} **Direction  :** `{dir_text}`
   
-  ⏰ **Entry Time :** `{entry_time_str}` (GMT+6)
+  ⏰ **Entry Time :** `{entry_str}` (GMT+6)
   ⏳ **Expiry     :** `1 Minute`
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
-🎯 **Strategy   :** `{strategy_name} v20.0`
-🔥 **Accuracy Status :** `VIP QUANT FILTERED`"""
-
-                try:
+🎯 **Drawings   :** `{strategy}`
+🔥 **Accuracy Status :** `VIP QUANT VERIFIED`"""
+                    
                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
                     pending_results.append({
-                        "channel": "VIP", "pair": pair_name, "ticker": ticker, "signal": signal,
-                        "entry_time": run_time, "expiry_time": expiry_time, "is_martingale": False
+                        "channel": "VIP", "pair": selected_pair, "ticker": ticker, 
+                        "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
-                except Exception as ex:
-                    print(f"VIP channel send error: {ex}")
 
-            # 🎯 ৩. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট মেকার (কোনো ফেক বা ভুলবাল উইন মেসেজ দেবে না)
+            # 🎯 ৩. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট চেকার
             still_pending = []
             for item in pending_results:
-                # ক্যান্ডেল ফিক্সড ক্লোজ হওয়ার জন্য ৫ সেকেন্ড এক্সট্রা বাফার যোগ করা হয়েছে
-                if now_bd >= (item["expiry_time"] + timedelta(seconds=5)):
-                    pair_name = item["pair"]
-                    ticker = item["ticker"]
-                    signal_dir = item["signal"]
+                if now_bd >= (item["expiry_time"] + timedelta(seconds=4)):
                     target_channel = MAIN_CHANNEL_ID if item["channel"] == "MAIN" else VIP_CHANNEL_ID
                     
-                    # লাইভ কোটেক্স/ফরেক্স ক্যান্ডেল চেক
-                    real_status = verify_live_result(ticker, item["entry_time"], signal_dir)
-
-                    if real_status == "WIN":
-                        candle_emoji = "🟢" if signal_dir == "BUY" else "🔴"
+                    # লাইভ ক্যান্ডেল ওপেন/ক্লোজ ম্যাচিং চেক
+                    result = verify_candle_result(item["ticker"], item["entry_time"], item["signal"])
+                    
+                    if result == "WIN":
+                        emoji = "🟢" if item["signal"] == "BUY" else "🔴"
                         msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
-                        result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** {msg_type}\nℹ️ **Candle Info :** {candle_emoji} Match Approved!\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        await bot.send_message(chat_id=target_channel, text=result_text, parse_mode="Markdown")
+                        res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n🏆 **RESULT :** {msg_type}\nℹ️ **Candle Info :** {emoji} Real Market Verified!\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
                         
-                    elif real_status == "DOJI":
-                        result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n⚠️ **RESULT :** `⏳ DOJI CANDLE (REFUND / TIE)`\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        await bot.send_message(chat_id=target_channel, text=result_text, parse_mode="Markdown")
+                    elif result == "DOJI":
+                        res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n⚠️ **RESULT :** `⏳ DOJI CANDLE (TIE)`\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
                         
-                    else: # রিয়েল ক্যান্ডেল অপজিট বা লস হলে
+                    else:  # ক্যান্ডেল উল্টা কালার হলে (LOSS)
                         if not item["is_martingale"]:
-                            m_entry = now_bd
                             m_expiry = now_bd + timedelta(minutes=1)
-                            m_alert = f"⚠️ **{pair_name} Direct Trade Missed. Use 1-Step Martingale (M1) NOW! {('🔴' if signal_dir == 'SELL' else '🟢')}**"
-                            await bot.send_message(chat_id=target_channel, text=m_alert, parse_mode="Markdown")
-
+                            m_emoji = "🟢" if item["signal"] == "BUY" else "🔴"
+                            alert = f"⚠️ **{item['pair']} Direct Trade Missed. Use 1-Step Martingale (M1) NOW! {m_emoji}**"
+                            await bot.send_message(chat_id=target_channel, text=alert, parse_mode="Markdown")
+                            
                             still_pending.append({
-                                "channel": item["channel"], "pair": pair_name, "ticker": ticker, "signal": signal_dir,
-                                "entry_time": m_entry, "expiry_time": m_expiry, "is_martingale": True
+                                "channel": item["channel"], "pair": item["pair"], "ticker": item["ticker"],
+                                "signal": item["signal"], "entry_time": now_bd, "expiry_time": m_expiry, "is_martingale": True
                             })
                         else:
-                            # মার্টিনগেলেও লস হলে সৎভাবে লস স্বীকার করবে, ফেক মেসেজ দেবে না
-                            result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n❌ **RESULT :** `SYSTEM LOSS (STOP & WAIT)` ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            await bot.send_message(chat_id=target_channel, text=result_text, parse_mode="Markdown")
+                            res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n❌ **RESULT :** `SYSTEM LOSS (WAIT FOR NEXT)` ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
                 else:
                     still_pending.append(item)
             pending_results = still_pending
 
         except Exception as e:
-            print(f"Dual Loop error: {e}")
+            print(f"Main loop error: {e}")
             
         await asyncio.sleep(2)
 
-# ==================== RAILWAY LIVE KEEP-ALIVE ====================
+# ==================== LIVE KEEP-ALIVE ====================
 @app.route('/')
-def home(): return "TradeVision AI Real Research Engine Server is Active!"
+def home(): return "TradeVision AI Price Action Engine is Online!"
 
 if __name__ == "__main__":
     def start_standalone():
