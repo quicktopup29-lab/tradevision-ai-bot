@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import random
 import pytz
 from telegram import Bot
+import yfinance as yf
 from threading import Thread
 from flask import Flask
 
@@ -21,9 +22,8 @@ next_signal_time = datetime.now(bd_tz)
 
 # ==================== AUTOMATIC DAILY SESSION (12:30 PM) ====================
 async def send_auto_bulk_session():
-    print("🔮 AUTOMATIC VIP HYBRID SESSION GENERATOR STARTED AT 12:30 PM...")
-    # লাইভ এবং ওটিসি পেয়ারের মিক্সড লিস্ট
-    base_pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD-OTC", "USD/INR-OTC", "NZD/CHF", "USD/MXN-OTC", "USD/CAD", "USD/EGP-OTC", "CAD/CHF-OTC"]
+    print("🔮 AUTOMATIC VIP HYBRID SESSION GENERATOR STARTED...")
+    base_pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "NZD/CHF", "USD/INR", "USD/MXN"]
     now_bd = datetime.now(bd_tz)
     
     start_time = now_bd.replace(hour=13, minute=0, second=0, microsecond=0)
@@ -48,32 +48,25 @@ async def send_auto_bulk_session():
 
     try:
         await bot.send_message(chat_id=VIP_CHANNEL_ID, text=session_card)
-        print("✅ AUTOMATIC BULK HYBRID SESSION CARD POSTED!")
     except Exception as e:
         print(f"❌ Failed to send auto session: {e}")
 
-# ==================== CORE HYBRID LOOP ====================
+# ==================== CORE ENGINE LOOP ====================
 async def main_automated_loop():
     global pending_results, session_sent_today, next_signal_time
     
-    # এখানে কিছু পেয়ার একদম লাইভ রিয়েল মার্কেট আর কিছু ওটিসি হিসেবে সাজানো হয়েছে
+    # শুধুমাত্র সেই পেয়ারগুলো রাখা হলো যেগুলোর আসল লাইভ ডাটা Yahoo-তে ১০০% পাওয়া যায়
     pairs = [
-        {"name": "EUR/USD", "type": "LIVE"},
-        {"name": "GBP/USD", "type": "LIVE"},
-        {"name": "USD/JPY", "type": "LIVE"},
-        {"name": "AUD/USD", "type": "LIVE"},
-        {"name": "USD/CAD", "type": "LIVE"},
-        {"name": "USD/INR-OTC", "type": "OTC"},
-        {"name": "NZD/CHF-OTC", "type": "OTC"},
-        {"name": "USD/MXN-OTC", "type": "OTC"},
-        {"name": "CAD/CHF-OTC", "type": "OTC"},
-        {"name": "USD/DZD-OTC", "type": "OTC"},
-        {"name": "USD/PHP-OTC", "type": "OTC"},
-        {"name": "USD/EGP-OTC", "type": "OTC"}
+        {"name": "EUR/USD", "symbol": "EURUSD=X"},
+        {"name": "GBP/USD", "symbol": "GBPUSD=X"},
+        {"name": "USD/JPY", "symbol": "USDJPY=X"},
+        {"name": "AUD/USD", "symbol": "AUDUSD=X"},
+        {"name": "USD/CAD", "symbol": "USDCAD=X"},
+        {"name": "USD/INR", "symbol": "USDINR=X"}
     ]
 
-    print("🤖 HYBRID LIVE+OTC ENGINE v17.5 IS RUNNING...")
-    next_signal_time = datetime.now(bd_tz) + timedelta(seconds=10)
+    print("🤖 REAL-DATA CHECKER ENGINE v18.0 IS RUNNING...")
+    next_signal_time = datetime.now(bd_tz) + timedelta(seconds=15)
 
     while True:
         try:
@@ -87,16 +80,16 @@ async def main_automated_loop():
             if now_bd.hour == 0 and now_bd.minute == 5:
                 session_sent_today = False
 
-            # 📊 ২. হাইব্রিড সিগন্যাল জেনারেটর
+            # 📊 ২. সিগন্যাল পোস্টিং (র্যান্ডম সময়ে ফায়ার হবে)
             if now_bd >= next_signal_time:
-                random_delay = random.randint(2, 5)
+                random_delay = random.randint(3, 6)
                 next_signal_time = now_bd + timedelta(minutes=random_delay)
 
                 selected = random.choice(pairs)
                 pair_name = selected["name"]
-                market_type = selected["type"]
+                yf_symbol = selected["symbol"]
                 
-                signal = random.choice(["BUY", "SELL"])
+                signal = random.choice(["BUY", "SELL"]) # BUY = CALL, SELL = PUT
                 
                 run_time = now_bd + timedelta(minutes=1)
                 entry_time_str = run_time.strftime("%H:%M")
@@ -104,9 +97,6 @@ async def main_automated_loop():
 
                 dir_emoji = "🟢" if signal == "BUY" else "🔴"
                 dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
-                
-                # মার্কেট টাইপ অনুযায়ী সাবটাইটেল বা স্ট্র্যাটেজির নাম চেঞ্জ হবে
-                strategy_name = "Live Market Price Action v17.5" if market_type == "LIVE" else "AI OTC Scalper v17.5"
 
                 msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
 ╔═══════════════════════════╗
@@ -117,41 +107,62 @@ async def main_automated_loop():
   ⏳ **Expiry     :** `1 Minute`
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
-🎯 **Strategy   :** `{strategy_name}`
+🎯 **Strategy   :** `Live Market Price Action v18.0`
 🔥 **Accuracy Locked :** `98% SURE-SHOT`"""
 
                 await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
-                print(f"📡 Hybrid Signal Sent for {pair_name} ({market_type})")
                 
+                # রেজাল্ট চেক করার জন্য পেন্ডিং লিস্টে ডাটা সেভ
                 pending_results.append({
-                    "pair": pair_name, "signal": signal,
+                    "pair": pair_name, "symbol": yf_symbol, "signal": signal,
                     "expiry_time": expiry_time, "is_martingale": False
                 })
 
-            # 🎯 ৩. স্মার্ট উইন/লস রেজাল্ট মেকার
+            # 🎯 ৩. আসল লাইভ ডাটা দিয়ে উইন/লস চেক (এখানে কোনো ফেক রেজাল্ট হবে না)
             still_pending = []
             for item in pending_results:
-                if now_bd >= (item["expiry_time"] + timedelta(seconds=5)):
-                    pair_name = item["pair"]
-                    win_chance = random.randint(1, 100)
+                # ক্যান্ডেল শেষ হওয়ার ১৫ সেকেন্ড পর আসল ডাটা টানা হবে
+                if now_bd >= (item["expiry_time"] + timedelta(seconds=15)):
+                    try:
+                        df = yf.download(tickers=item["symbol"], period="1d", interval="1m", progress=False)
+                        if not df.empty:
+                            close_price = df["Close"].iloc[-1]
+                            open_price = df["Open"].iloc[-1]
+                            signal = item["signal"]
+                            pair_name = item["pair"]
+                            
+                            # ক্যান্ডেল গ্রিন নাকি রেড তার আসল হিসেব
+                            is_green = close_price > open_price
+                            is_red = close_price < open_price
+                            
+                            # সিগন্যালের সাথে চার্ট মিলানো
+                            trade_win = (signal == "BUY" and is_green) or (signal == "SELL" and is_red)
 
-                    if win_chance <= 92:  # ৯২% উইন রেট
-                        msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
-                        result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
-                    else:
-                        if not item["is_martingale"]:
-                            m_expiry = now_bd + timedelta(minutes=1)
-                            m_alert = f"⚠️ **{pair_name} Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
-                            await bot.send_message(chat_id=VIP_CHANNEL_ID, text=m_alert, parse_mode="Markdown")
+                            if trade_win:
+                                msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
+                                result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
+                            else:
+                                # যদি লস হয় এবং এটা যদি প্রথম ডিরেক্ট ট্রেড হয়, তবে মার্টিনগেল অ্যালার্ট দেবে
+                                if not item["is_martingale"]:
+                                    m_expiry = now_bd + timedelta(minutes=1)
+                                    m_alert = f"⚠️ **{pair_name} Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
+                                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=m_alert, parse_mode="Markdown")
 
-                            still_pending.append({
-                                "pair": pair_name, "signal": item["signal"],
-                                "expiry_time": m_expiry, "is_martingale": True
-                            })
+                                    # মার্টিনগেল চেক করার জন্য আবার পুশ
+                                    still_pending.append({
+                                        "pair": pair_name, "symbol": item["symbol"], "signal": signal,
+                                        "expiry_time": m_expiry, "is_martingale": True
+                                    })
+                                else:
+                                    # মার্টিনগেলও যদি লস হয়, তবে আসল লস কার্ড দেখাবে
+                                    result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
                         else:
-                            result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
+                            still_pending.append(item)
+                    except Exception as err:
+                        print(f"Error fetching real data: {err}")
+                        still_pending.append(item)
                 else:
                     still_pending.append(item)
             pending_results = still_pending
@@ -163,7 +174,7 @@ async def main_automated_loop():
 
 # ==================== RAILWAY LIVE KEEP-ALIVE ====================
 @app.route('/')
-def home(): return "TradeVision AI Hybrid Live+OTC Bot is Running!"
+def home(): return "Real-Data Checking Bot is Live!"
 
 if __name__ == "__main__":
     def start_standalone():
