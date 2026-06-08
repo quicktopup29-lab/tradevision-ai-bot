@@ -5,16 +5,16 @@ import random
 import pytz
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
 from telegram import Bot
-from threading import Thread
 from flask import Flask
+from threading import Thread
 
 # ==================== CONFIGURATION ====================
 TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
 MAIN_CHANNEL_ID = "@tradevision_ai_signals"  
 VIP_CHANNEL_ID = "@tradevision_vip_signals"  
 
+# python-telegram-bot v20+ সংস্করণের জন্য আধুনিক অ্যাসিঙ্ক বট অবজেক্ট
 bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
 app = Flask('')
@@ -34,29 +34,34 @@ REAL_FOREX_PAIRS = {
     "GBP/JPY": "GBPJPY=X"
 }
 
-# ==================== PRICE ACTION & DRAWINGS ENGINE ====================
+# ==================== MANUAL INDICATION ENGINE (RSI, SUPPORT & RESISTANCE) ====================
 def analyze_price_action(ticker_symbol):
-    """ভার্চুয়াল সাপোর্ট/রেজিস্ট্যান্স লাইন্স এবং ইন্ডিকেটর অ্যানালাইসিস ইঞ্জিন"""
+    """ভার্চুয়াল সাপোর্ট/রেজিস্ট্যান্স লাইন্স এবং RSI ইন্ডিকেটর অ্যানালাইসিস ইঞ্জিন"""
     try:
         # গত ১ দিনের ১ মিনিটের লাইভ ক্যান্ডেল ডাটা ডাউনলোড
         df = yf.download(tickers=ticker_symbol, period="1d", interval="1m", progress=False)
-        if df.empty or len(df) < 30:
+        if df.empty or len(df) < 20:
             return None, None
 
-        # মাল্টি-লেভেল কলাম ফিক্স করা
+        # মাল্টি-লেভেল কলাম ফিক্স করা (yfinance নতুন সংস্করণের জন্য)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # ১. টেকনিক্যাল ইন্ডিকেটর ক্যালকুলেশন (RSI)
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        
-        # ২. ড্রয়িংস লজিক: গত ২০ ক্যান্ডেলের হাই এবং লো দিয়ে সাপোর্ট-রেজিস্ট্যান্স লেভেল নির্ধারণ
-        recent_candles = df.tail(20)
+        # ১. ম্যানুয়াল RSI (14) ক্যালকুলেশন
+        close_prices = df['Close'].copy()
+        delta = close_prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi_series = 100 - (100 / (1 + rs))
+        current_rsi = rsi_series.iloc[-1] if not pd.isna(rsi_series.iloc[-1]) else 50
+
+        # ২. ড্রয়িংস লজিক: গত ১৫ ক্যান্ডেলের হাই এবং লো দিয়ে সাপোর্ট-রেজিস্ট্যান্স লেভেল নির্ধারণ
+        recent_candles = df.tail(15)
         resistance_line = recent_candles['High'].max()
         support_line = recent_candles['Low'].min()
         
-        current_close = df['Close'].iloc[-1]
-        current_rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
+        current_close = close_prices.iloc[-1]
         
         # ৩. প্রফেশনাল প্রাইস অ্যাকশন সিদ্ধান্ত
         # প্রাইস যদি রেজিস্ট্যান্স লাইনের কাছাকাছি যায় এবং RSI ওভারবট (>৬৮) হয় -> SELL
@@ -67,14 +72,14 @@ def analyze_price_action(ticker_symbol):
         elif current_close <= (support_line + 0.00005) or current_rsi < 32:
             return "BUY", "🟢 Support Bounce & RSI Oversold"
             
-        # ব্রেকআউট বা ট্রেন্ড কন্টিনিউয়েশন লজিক
+        # ট্রেন্ড ফিল্টার (Simple Moving Average - SMA 10)
         else:
-            df['EMA_20'] = ta.ema(df['Close'], length=20)
-            current_ema = df['EMA_20'].iloc[-1] if not pd.isna(df['EMA_20'].iloc[-1]) else current_close
-            if current_close > current_ema:
-                return "BUY", "📈 EMA-20 Trend Follower"
+            sma_10 = close_prices.rolling(window=10).mean()
+            current_sma = sma_10.iloc[-1] if not pd.isna(sma_10.iloc[-1]) else current_close
+            if current_close > current_sma:
+                return "BUY", "📈 SMA-10 Bullish Trend Follower"
             else:
-                return "SELL", "📉 EMA-20 Bearish Momentum"
+                return "SELL", "📉 SMA-10 Bearish Momentum"
                 
     except Exception as e:
         print(f"Technical Analysis Error for {ticker_symbol}: {e}")
@@ -117,9 +122,9 @@ async def main_automated_loop():
     global pending_results, session_sent_today, next_main_signal_time, next_vip_signal_time
     
     pairs_list = list(REAL_FOREX_PAIRS.keys())
-    print("🤖 PRICE ACTION ENGINE v21.0 IS SCANNING LIVE MARKETS...")
+    print("🤖 PRICE ACTION ENGINE v21.5 (ASYNC PTB v21) IS RUNNING...")
     
-    next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=10)
+    next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=15)
     next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=5)
 
     while True:
@@ -153,8 +158,9 @@ async def main_automated_loop():
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
 🎯 **Drawings   :** `{strategy}`
-🔥 **Market Condition :** `100% ANALYZED`"""
+🔥 **Market Condition :** `100% REAL ANALYZED`"""
                     
+                    # নতুন সংস্করণের জন্য await ব্যবহার করা বাধ্যতামূলক
                     await bot.send_message(chat_id=MAIN_CHANNEL_ID, text=msg, parse_mode="Markdown")
                     pending_results.append({
                         "channel": "MAIN", "pair": selected_pair, "ticker": ticker, 
@@ -196,10 +202,10 @@ async def main_automated_loop():
                         "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
 
-            # 🎯 ৩. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট চেকার
+            # 🎯 ③. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট চেকার
             still_pending = []
             for item in pending_results:
-                if now_bd >= (item["expiry_time"] + timedelta(seconds=4)):
+                if now_bd >= (item["expiry_time"] + timedelta(seconds=5)):
                     target_channel = MAIN_CHANNEL_ID if item["channel"] == "MAIN" else VIP_CHANNEL_ID
                     
                     # লাইভ ক্যান্ডেল ওপেন/ক্লোজ ম্যাচিং চেক
@@ -240,10 +246,11 @@ async def main_automated_loop():
 
 # ==================== LIVE KEEP-ALIVE ====================
 @app.route('/')
-def home(): return "TradeVision AI Price Action Engine is Online!"
+def home(): return "TradeVision AI Price Action Engine v21.5 is Online!"
 
 if __name__ == "__main__":
     def start_standalone():
+        # নতুন লাইব্রেরির জন্য অ্যাসিঙ্ক লুপ হ্যান্ডলিং
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(main_automated_loop())
