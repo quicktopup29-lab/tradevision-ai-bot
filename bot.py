@@ -18,12 +18,12 @@ app = Flask('')
 
 pending_results = []
 session_sent_today = False  
-last_processed_minute = -1 # একই মিনিটে যেন বারবার সিগন্যাল না যায়
+last_processed_minute = -1 
 
 # ==================== AUTOMATIC DAILY SESSION (12:30 PM) ====================
 async def send_auto_bulk_session():
     print("🔮 AUTOMATIC VIP SESSION GENERATOR STARTED AT 12:30 PM...")
-    base_pairs = ["USD/DZD", "NZD/CHF", "USD/INR", "LTC/USD", "USD/MXN", "USD/PHP", "USD/EGP", "CAD/CHF", "EUR/USD", "GBP/USD"]
+    base_pairs = ["USD/DZD", "NZD/CHF", "USD/INR", "USD/CAD", "USD/MXN", "USD/PHP", "USD/EGP", "CAD/CHF", "EUR/USD", "GBP/USD"]
     now_bd = datetime.now(bd_tz)
     
     start_time = now_bd.replace(hour=13, minute=0, second=0, microsecond=0)
@@ -55,13 +55,11 @@ async def send_auto_bulk_session():
 
 # ==================== 100% INTERNAL SCALPING ENGINE ====================
 def scan_and_generate_signal(pair):
-    """বট নিজেই ১ মিনিটের ক্যান্ডেলস্টিক প্যাটার্ন এনালাইসিস করে সিগন্যাল বানাবে"""
     try:
         yf_symbol = pair.replace("/", "") + "=X"
         df = yf.download(tickers=yf_symbol, period="1d", interval="1m", progress=False)
         if df.empty or len(df) < 5: return None
 
-        # ক্যান্ডেল ডাটা রিড
         close_p = df["Close"].iloc[-1]
         open_p = df["Open"].iloc[-1]
         high_p = df["High"].iloc[-1]
@@ -69,14 +67,14 @@ def scan_and_generate_signal(pair):
 
         body = abs(close_p - open_p)
         
-        # 🟢 CALL / BUY Signal Logic (Strong Bullish Move)
+        # 🟢 CALL / BUY Signal Logic
         if close_p > open_p and body > 0.0001:
-            if (high_p - close_p) < (body * 0.2): # ওপরে বড় শ্যাডো নেই
+            if (high_p - close_p) < (body * 0.2): 
                 return {"signal": "BUY", "price": close_p}
 
-        # 🔴 PUT / SELL Signal Logic (Strong Bearish Move)
+        # 🔴 PUT / SELL Signal Logic
         elif close_p < open_p and body > 0.0001:
-            if (close_p - low_p) < (body * 0.2): # নিচে বড় শ্যাডো নেই
+            if (close_p - low_p) < (body * 0.2): 
                 return {"signal": "SELL", "price": close_p}
                 
         return None
@@ -87,11 +85,11 @@ def scan_and_generate_signal(pair):
 async def main_standalone_loop():
     global pending_results, session_sent_today, last_processed_minute
     
-    # আপনার সেই ১২টি স্পেশাল হাই-ভলিউম পেয়ার
+    # LTC/USD বাদ দিয়ে একদম ফ্রেশ ও পারফেক্ট ১২টি পেয়ার লিস্ট করা হলো
     pairs = [
         "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", 
         "USD/INR", "NZD/CHF", "USD/MXN", "CAD/CHF",
-        "USD/DZD", "USD/PHP", "USD/EGP", "LTC/USD"
+        "USD/DZD", "USD/PHP", "USD/EGP", "USD/CAD"
     ]
 
     print("🤖 STANDALONE SELF-MADE AUTO ENGINE IS RUNNING LIVE...")
@@ -108,11 +106,10 @@ async def main_standalone_loop():
             if now_bd.hour == 0 and now_bd.minute == 5:
                 session_sent_today = False
 
-            # 📊 ২. ক্যান্ডেল ক্লোজ টাইমে প্রতি মিনিটে একবার মার্কেট স্ক্যান (১ মিনিটের সিগন্যাল প্লাবন)
+            # 📊 ২. প্রতি মিনিটে মার্কেট স্ক্যান (১ মিনিটের সিগন্যাল)
             if now_bd.second <= 5 and now_bd.minute != last_processed_minute:
                 last_processed_minute = now_bd.minute
                 
-                # র্যান্ডম পেয়ার সিলেক্ট করে স্ক্যান করা যাতে গ্রুপ জ্যাম না হয় কিন্তু ঘন ঘন ১ মিনিটের সিগন্যাল আসে
                 scanned_pair = random.choice(pairs)
                 res = scan_and_generate_signal(scanned_pair)
                 
@@ -122,12 +119,11 @@ async def main_standalone_loop():
                     
                     run_time = now_bd + timedelta(minutes=1)
                     entry_time_str = run_time.strftime("%H:%M")
-                    expiry_time = run_time + timedelta(minutes=1) # ১ মিনিট এক্সপায়ারি লক
+                    expiry_time = run_time + timedelta(minutes=1) 
 
                     dir_emoji = "🟢" if signal == "BUY" else "🔴"
                     dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
 
-                    # সিগন্যাল কার্ড
                     msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
 ╔═══════════════════════════╗
   📊 **Asset Pair :** `{clean_pair}`
@@ -137,7 +133,7 @@ async def main_standalone_loop():
   ⏳ **Expiry     :** `1 Minute`
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
-🎯 **Strategy   :** `Standalone Price Action v16.0`
+🎯 **Strategy   :** `Standalone Price Action v16.1`
 🔥 **Accuracy Locked :** `98% SURE-SHOT`"""
 
                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
@@ -207,5 +203,4 @@ if __name__ == "__main__":
     t_bot.daemon = True
     t_bot.start()
 
-    # রেলওয়েকে শান্ত রাখার জন্য ৮MD পোর্ট রান করা
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
