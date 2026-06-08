@@ -3,3 +3,5 @@ python-telegram-bot==21.4
 pandas==2.2.3
 yfinance
 pytz
+yfinance
+pandas
