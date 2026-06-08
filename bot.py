@@ -1,12 +1,12 @@
 import os
 import asyncio
-from flask import Flask, request, jsonify
-from threading import Thread
 from datetime import datetime, timedelta
 import random
 import pytz
 from telegram import Bot
 import yfinance as yf
+from threading import Thread
+from flask import Flask
 
 # ==================== CONFIGURATION ====================
 TOKEN = "8967772189:AAG1mpGAOsFo2NbwK72t9UUbH-pD0nxLE0w"
@@ -14,10 +14,11 @@ VIP_CHANNEL_ID = "@tradevision_vip_signals"
 
 bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
-app = Flask(__name__)
+app = Flask('')
 
 pending_results = []
-session_sent_today = False  # প্রতিদিন একবার সেশন পাঠানোর ট্র্যাকার
+session_sent_today = False  
+last_processed_minute = -1 # একই মিনিটে যেন বারবার সিগন্যাল না যায়
 
 # ==================== AUTOMATIC DAILY SESSION (12:30 PM) ====================
 async def send_auto_bulk_session():
@@ -25,7 +26,6 @@ async def send_auto_bulk_session():
     base_pairs = ["USD/DZD", "NZD/CHF", "USD/INR", "LTC/USD", "USD/MXN", "USD/PHP", "USD/EGP", "CAD/CHF", "EUR/USD", "GBP/USD"]
     now_bd = datetime.now(bd_tz)
     
-    # সেশন শুরু হবে দুপুর ১:০০ (১৩:০০) টা থেকে
     start_time = now_bd.replace(hour=13, minute=0, second=0, microsecond=0)
     signals_list = []
     used_times = set()
@@ -42,7 +42,6 @@ async def send_auto_bulk_session():
             signals_list.append(f"M1 {clean_pair} {time_str} {direction}")
             used_times.add(time_str)
 
-    # হুবহু আপনার চেনা সেই প্রিমিয়াম ফরম্যাট
     session_card = f"⏰ UTC  +6:00 🇧🇩 ;  MTG :- 1 STEP➕\n\n        😈    PREMIUM SIGNAL    😈\n\n⌛️ 1 Minutes :-\n                         \n"
     for sig in signals_list: 
         session_card += f"{sig}\n"
@@ -50,31 +49,107 @@ async def send_auto_bulk_session():
 
     try:
         await bot.send_message(chat_id=VIP_CHANNEL_ID, text=session_card)
-        print("✅ AUTOMATIC BULK SESSION CARD POSTED SUCCESSFULLY AT 12:30 PM!")
+        print("✅ AUTOMATIC BULK SESSION CARD POSTED!")
     except Exception as e:
         print(f"❌ Failed to send auto session: {e}")
 
-# ==================== LIVE WIN/LOSS RESULT CHECKER ====================
-async def result_checker_loop():
-    global pending_results, session_sent_today
+# ==================== 100% INTERNAL SCALPING ENGINE ====================
+def scan_and_generate_signal(pair):
+    """বট নিজেই ১ মিনিটের ক্যান্ডেলস্টিক প্যাটার্ন এনালাইসিস করে সিগন্যাল বানাবে"""
+    try:
+        yf_symbol = pair.replace("/", "") + "=X"
+        df = yf.download(tickers=yf_symbol, period="1d", interval="1m", progress=False)
+        if df.empty or len(df) < 5: return None
+
+        # ক্যান্ডেল ডাটা রিড
+        close_p = df["Close"].iloc[-1]
+        open_p = df["Open"].iloc[-1]
+        high_p = df["High"].iloc[-1]
+        low_p = df["Low"].iloc[-1]
+
+        body = abs(close_p - open_p)
+        
+        # 🟢 CALL / BUY Signal Logic (Strong Bullish Move)
+        if close_p > open_p and body > 0.0001:
+            if (high_p - close_p) < (body * 0.2): # ওপরে বড় শ্যাডো নেই
+                return {"signal": "BUY", "price": close_p}
+
+        # 🔴 PUT / SELL Signal Logic (Strong Bearish Move)
+        elif close_p < open_p and body > 0.0001:
+            if (close_p - low_p) < (body * 0.2): # নিচে বড় শ্যাডো নেই
+                return {"signal": "SELL", "price": close_p}
+                
+        return None
+    except:
+        return None
+
+# ==================== FULLY STANDALONE AUTO LOOP ====================
+async def main_standalone_loop():
+    global pending_results, session_sent_today, last_processed_minute
+    
+    # আপনার সেই ১২টি স্পেশাল হাই-ভলিউম পেয়ার
+    pairs = [
+        "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", 
+        "USD/INR", "NZD/CHF", "USD/MXN", "CAD/CHF",
+        "USD/DZD", "USD/PHP", "USD/EGP", "LTC/USD"
+    ]
+
+    print("🤖 STANDALONE SELF-MADE AUTO ENGINE IS RUNNING LIVE...")
+
     while True:
         try:
             now_bd = datetime.now(bd_tz)
             
-            # ⏰ ঠিক দুপুর ১২:৩০ মিনিটে অটোমেটিক সেশন লিস্ট চলে যাবে
-            if now_bd.hour == 12 and now_bd.minute == 30:
-                if not session_sent_today:
-                    await send_auto_bulk_session()
-                    session_sent_today = True
+            # ⏰ ১. দুপুর ১২:৩০ এর অটো সেশন লিস্ট
+            if now_bd.hour == 12 and now_bd.minute == 30 and not session_sent_today:
+                await send_auto_bulk_session()
+                session_sent_today = True
             
-            # রাত ১২টায় সেশন ট্র্যাকার রিসেট হবে পরের দিনের জন্য
             if now_bd.hour == 0 and now_bd.minute == 5:
                 session_sent_today = False
 
-            # --- অটো রেজাল্ট চেকিং সেকশন ---
+            # 📊 ২. ক্যান্ডেল ক্লোজ টাইমে প্রতি মিনিটে একবার মার্কেট স্ক্যান (১ মিনিটের সিগন্যাল প্লাবন)
+            if now_bd.second <= 5 and now_bd.minute != last_processed_minute:
+                last_processed_minute = now_bd.minute
+                
+                # র্যান্ডম পেয়ার সিলেক্ট করে স্ক্যান করা যাতে গ্রুপ জ্যাম না হয় কিন্তু ঘন ঘন ১ মিনিটের সিগন্যাল আসে
+                scanned_pair = random.choice(pairs)
+                res = scan_and_generate_signal(scanned_pair)
+                
+                if res:
+                    signal = res["signal"]
+                    clean_pair = scanned_pair.replace("/", "") + "-OTC"
+                    
+                    run_time = now_bd + timedelta(minutes=1)
+                    entry_time_str = run_time.strftime("%H:%M")
+                    expiry_time = run_time + timedelta(minutes=1) # ১ মিনিট এক্সপায়ারি লক
+
+                    dir_emoji = "🟢" if signal == "BUY" else "🔴"
+                    dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
+
+                    # সিগন্যাল কার্ড
+                    msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
+╔═══════════════════════════╗
+  📊 **Asset Pair :** `{clean_pair}`
+  {dir_emoji} **Direction  :** `{dir_text}`
+  
+  ⏰ **Entry Time :** `{entry_time_str}` (GMT+6)
+  ⏳ **Expiry     :** `1 Minute`
+  📈 **Entry Type :** `Next Candle / M1`
+╚═══════════════════════════╝
+🎯 **Strategy   :** `Standalone Price Action v16.0`
+🔥 **Accuracy Locked :** `98% SURE-SHOT`"""
+
+                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
+                    
+                    pending_results.append({
+                        "pair": scanned_pair, "signal": signal, "entry_price": res["price"],
+                        "expiry_time": expiry_time, "is_martingale": False
+                    })
+
+            # 🎯 ৩. অটো উইন/লস রেজাল্ট চেকার
             still_pending = []
             for item in pending_results:
-                # ক্যান্ডেল শেষ হওয়ার ১০ সেকেন্ড পর ফাইনাল রেজাল্ট মিলানো হবে
                 if now_bd >= (item["expiry_time"] + timedelta(seconds=10)):
                     try:
                         yf_symbol = item["pair"].replace("/", "") + "=X"
@@ -82,31 +157,27 @@ async def result_checker_loop():
                         
                         if not df.empty:
                             close_price = df["Close"].iloc[-1]
-                            open_price = df["Open"].iloc[-1]
+                            entry_price = item["entry_price"]
                             signal = item["signal"]
                             clean_pair = item["pair"].replace("/", "") + "-OTC"
                             
-                            # উইন নাকি লস সেটার নিখুঁত ক্যালকুলেশন
-                            is_win = (signal == "BUY" and close_price > open_price) or (signal == "SELL" and close_price < open_price)
+                            is_win = (signal == "BUY" and close_price > entry_price) or (signal == "SELL" and close_price < entry_price)
 
                             if is_win:
                                 msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
                                 result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{clean_pair}`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
                                 await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
                             else:
-                                # ডিরেক্ট ট্রেড মিস বা লস হলে অটো ১-স্টেপ মার্টিনগেল (M1) অ্যালার্ট দেবে
                                 if not item["is_martingale"]:
-                                    m_expiry = now_bd + timedelta(minutes=item["duration_min"])
+                                    m_expiry = now_bd + timedelta(minutes=1)
                                     m_alert = f"⚠️ **{clean_pair} Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
                                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=m_alert, parse_mode="Markdown")
 
-                                    # মার্টিনগেল ট্র্যাকিং-এ পুশ করা হলো
                                     still_pending.append({
-                                        "pair": item["pair"], "signal": signal, 
-                                        "duration_min": item["duration_min"], "expiry_time": m_expiry, "is_martingale": True
+                                        "pair": item["pair"], "signal": signal, "entry_price": close_price,
+                                        "expiry_time": m_expiry, "is_martingale": True
                                     })
                                 else:
-                                    # মার্টিনগেলও লস হলে ফাইনাল লস কার্ড
                                     result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{clean_pair}`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
                                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
                         else:
@@ -115,74 +186,26 @@ async def result_checker_loop():
                         still_pending.append(item)
                 else:
                     still_pending.append(item)
-            
             pending_results = still_pending
-        except Exception as e:
-            print(f"Result loop error: {e}")
+
+        except Exception as main_err:
+            print(f"🔥 Standalone Engine Loop Warning: {main_err}")
             
-        await asyncio.sleep(5)
+        await asyncio.sleep(2)
 
-# ==================== TRADINGVIEW WEBHOOK RECEIVER ====================
-@app.route('/webhook', methods=['POST'])
-def tradingview_webhook():
-    data = request.json
-    if not data: 
-        return jsonify({"status": "error", "message": "No data"}), 400
+# ==================== RAILWAY LIVE KEEP-ALIVE ====================
+@app.route('/')
+def home(): return "Standalone Bot is Alive and Scanning Market!"
 
-    pair = data.get("pair")          
-    signal = data.get("signal")      # "BUY" অথবা "SELL"
-    timeframe = data.get("timeframe", "1min") 
-
-    now_bd = datetime.now(bd_tz)
-    entry_time_str = now_bd.strftime("%H:%M")
-    
-    # টাইমফ্রেম অনুযায়ী এক্সপায়ারি লক করা
-    duration_min = 5 if timeframe == "5min" else 1
-    expiry_time = now_bd + timedelta(minutes=duration_min)
-
-    dir_emoji = "🟢" if signal == "BUY" else "🔴"
-    dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
-    exp_text = "1 Minute" if timeframe == "1min" else "5 Minutes"
-    clean_pair = pair.replace("/", "") + "-OTC"
-
-    # সুন্দর প্রিমিয়াম সিগন্যাল কার্ড ফরম্যাট
-    msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
-╔═══════════════════════════╗
-  📊 **Asset Pair :** `{clean_pair}`
-  {dir_emoji} **Direction  :** `{dir_text}`
-  
-  ⏰ **Entry Time :** `{entry_time_str}` (GMT+6)
-  ⏳ **Expiry     :** `{exp_text}`
-  📈 **Entry Type :** `Next Candle / M1`
-╚═══════════════════════════╝
-🎯 **Strategy   :** `Ultra Scalper Engine v15.0`
-🔥 **Accuracy Locked :** `98% SURE-SHOT`"""
-
-    # টেলিগ্রামে ইনস্ট্যান্ট সিগন্যাল ফায়ার করা
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown"))
-
-    # সিগন্যালটিকে রেজাল্ট ট্র্যাকারের লিস্টে পুশ করা হলো
-    pending_results.append({
-        "pair": pair, "signal": signal, 
-        "duration_min": duration_min, "expiry_time": expiry_time, "is_martingale": False
-    })
-
-    print(f"🚀 Signal Sent Successfully to Channel for {clean_pair}!")
-    return jsonify({"status": "success"}), 200
-
-# ==================== SERVER ENGINE START ====================
 if __name__ == "__main__":
-    # ১. ব্যাকগ্রাউন্ডে রেজাল্ট চেকার এবং ১২:৩০ এর টাইম লুপ চালু করা
-    def start_bot():
+    def start_standalone():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(result_checker_loop())
+        loop.run_until_complete(main_standalone_loop())
 
-    t_bot = Thread(target=start_bot)
+    t_bot = Thread(target=start_standalone)
     t_bot.daemon = True
     t_bot.start()
 
-    # ২. মূল Flask Webhook সার্ভার চালু করা
+    # রেলওয়েকে শান্ত রাখার জন্য ৮MD পোর্ট রান করা
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
