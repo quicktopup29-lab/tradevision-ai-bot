@@ -86,7 +86,7 @@ def analyze_price_action(ticker_symbol):
         return None, None
 
 def verify_candle_result(ticker_symbol, entry_time, expected_direction):
-    """ট্রেড শেষে লাইভ ক্যান্ডেল ওপেন-ক্লোজ ম্যাচিং ইঞ্জিন"""
+    """ট্রেড শেষে লাইভ ক্যান্ডেল ওপেন-ক্লোজ ম্যাচিং ইঞ্জিন (টাই বা ডৌজি এরর ফিক্সড)"""
     try:
         df = yf.download(tickers=ticker_symbol, period="1d", interval="1m", progress=False)
         if df.empty:
@@ -100,15 +100,18 @@ def verify_candle_result(ticker_symbol, entry_time, expected_direction):
         
         for index, row in df.iterrows():
             if index.strftime("%H:%M") == target_time_str:
-                open_p = row['Open']
-                close_p = row['Close']
+                open_p = float(row['Open'])
+                close_p = float(row['Close'])
                 
+                # যদি ক্লোজ প্রাইস ওপেনের চেয়ে বড় হয়, তবে নিশ্চিত BUY ক্যান্ডেল
                 if close_p > open_p:
                     actual = "BUY"
+                # যদি ক্লোজ প্রাইস ওপেনের চেয়ে ছোট হয়, তবে নিশ্চিত SELL ক্যান্ডেল
                 elif close_p < open_p:
                     actual = "SELL"
+                # যদি দশমিকের ৪ ঘরে সমান দেখায়, তবে ডাটা গ্যাপ ও মেম্বারদের সেফটির জন্য ওটাকে সরাসরি 'LOSS' ধরে মার্টিনগেল দেওয়া হবে
                 else:
-                    return "DOJI"
+                    return "LOSS"
                     
                 return "WIN" if actual == expected_direction else "LOSS"
                 
@@ -122,7 +125,7 @@ async def main_automated_loop():
     global pending_results, session_sent_today, next_main_signal_time, next_vip_signal_time
     
     pairs_list = list(REAL_FOREX_PAIRS.keys())
-    print("🤖 PRICE ACTION ENGINE v21.5 (ASYNC PTB v21) IS RUNNING...")
+    print("🤖 PRICE ACTION ENGINE v21.5 (FIXED RESULT) IS RUNNING...")
     
     next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=15)
     next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=5)
@@ -160,7 +163,6 @@ async def main_automated_loop():
 🎯 **Drawings   :** `{strategy}`
 🔥 **Market Condition :** `100% REAL ANALYZED`"""
                     
-                    # নতুন সংস্করণের জন্য await ব্যবহার করা বাধ্যতামূলক
                     await bot.send_message(chat_id=MAIN_CHANNEL_ID, text=msg, parse_mode="Markdown")
                     pending_results.append({
                         "channel": "MAIN", "pair": selected_pair, "ticker": ticker, 
@@ -202,7 +204,7 @@ async def main_automated_loop():
                         "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
 
-            # 🎯 ③. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট চেকার
+            # 🎯 ৩. লাইভ ক্যান্ডেল ভেরিফাইড রেজাল্ট চেকার (কোনো ভুয়া TIE মেসেজ দেবে না)
             still_pending = []
             for item in pending_results:
                 if now_bd >= (item["expiry_time"] + timedelta(seconds=5)):
@@ -217,11 +219,7 @@ async def main_automated_loop():
                         res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n🏆 **RESULT :** {msg_type}\nℹ️ **Candle Info :** {emoji} Real Market Verified!\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
                         
-                    elif result == "DOJI":
-                        res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n⚠️ **RESULT :** `⏳ DOJI CANDLE (TIE)`\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
-                        
-                    else:  # ক্যান্ডেল উল্টা কালার হলে (LOSS)
+                    else:  # ক্যান্ডেল উল্টা কালার বা ডাটা গ্যাপের কারণে সমান হলে (LOSS)
                         if not item["is_martingale"]:
                             m_expiry = now_bd + timedelta(minutes=1)
                             m_emoji = "🟢" if item["signal"] == "BUY" else "🔴"
@@ -250,7 +248,6 @@ def home(): return "TradeVision AI Price Action Engine v21.5 is Online!"
 
 if __name__ == "__main__":
     def start_standalone():
-        # নতুন লাইব্রেরির জন্য অ্যাসিঙ্ক লুপ হ্যান্ডলিং
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(main_automated_loop())
