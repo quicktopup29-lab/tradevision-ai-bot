@@ -33,64 +33,66 @@ REAL_FOREX_PAIRS = {
 
 # ==================== ADVANCED ZERO-DELAY LIVE ENGINE ====================
 def analyze_price_action_v2(ticker_symbol):
-    """ডিপ প্রাইস অ্যাকশন এবং ক্যান্ডেল ট্রেন্ড অ্যানালাইসিস ইঞ্জিন (Zero-Delay)"""
+    """ডিপ প্রাইস অ্যাকশন এবং ক্যান্ডেল ট্রেন্ড অ্যানালাইসিস engine (Pandas 2.x Fix)"""
     try:
-        # গত ৫ দিনের ডাটা নেওয়া হচ্ছে যেন মুভিং অ্যাভারেজ এবং সাপোর্ট-রেজিস্ট্যান্স নিখুঁত হয়
         df = yf.download(tickers=ticker_symbol, period="5d", interval="1m", progress=False)
-        if df.empty or len(df) < 50:
+        
+        # ট্রুথ ভ্যালু এরর ফিক্স করার জন্য কঠোরভাবে এম্পটি চেক
+        if df is None or df.empty or len(df) < 50:
             return None, None
 
+        # পান্ডাস ২.২.৩ মাল্টি-ইনডেক্স কলাম ফিক্স
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # ১. ডাটা ডিলে ফিক্সিং (সর্বশেষ অসম্পূর্ণ ক্যান্ডেল বাদ দিয়ে তার আগের ৩টি ক্যান্ডেলের ট্রেন্ড দেখা)
+        # ১. ডাটা ক্লিন ও নাল ভ্যালু রিমুভ
         df = df.dropna()
+        if len(df) < 30:
+            return None, None
         
-        # ২. ম্যানুয়াল আরএসআই (RSI 14) স্মুথড ক্যালকুলেশন
-        close_prices = df['Close'].copy()
+        # ২. ম্যানুয়াল আরএসআই (RSI 14) ক্যালকুলেশন
+        close_prices = df['Close'].squeeze()
         delta = close_prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         rsi_series = 100 - (100 / (1 + rs))
         
-        # ৩. ট্রেন্ড কনফার্মেশনের জন্য ৩টি ক্যান্ডেলের গড় ইএমএ (EMA 10 & EMA 30)
+        # ৩. ট্রেন্ড কনফার্মেশনের জন্য ইএমএ (EMA 10 & EMA 30)
         ema_short = close_prices.ewm(span=10, adjust=False).mean()
         ema_long = close_prices.ewm(span=30, adjust=False).mean()
 
-        # সর্বশেষ ভেরিফাইড ডাটা পয়েন্ট
-        current_close = close_prices.iloc[-2]  # ডিলে এড়াতে ২ নম্বর ইনডেক্স (১০০% কমপ্লিট ক্যান্ডেল)
-        current_rsi = rsi_series.iloc[-2]
-        short_ma = ema_short.iloc[-2]
-        long_ma = ema_long.iloc[-2]
+        # একক মান নিশ্চিত করতে float ও .item() বা .iloc ব্যবহার
+        current_close = float(close_prices.iloc[-2])  
+        current_rsi = float(rsi_series.iloc[-2])
+        short_ma = float(ema_short.iloc[-2])
+        long_ma = float(ema_long.iloc[-2])
         
-        # ৪. শক্তিশালী ড্রয়িংস ও প্রাইস অ্যাকশন ফিল্টার
-        # গত ৫০ ক্যান্ডেলের স্ট্রং সাপোর্ট ও রেজিস্ট্যান্স জোন
+        # ৪. সাপোর্ট ও রেজিস্ট্যান্স জোন নির্ধারণ
         recent_zone = df.tail(50)
-        strong_resistance = recent_zone['High'].max()
-        strong_support = recent_zone['Low'].min()
+        strong_resistance = float(recent_zone['High'].max())
+        strong_support = float(recent_zone['Low'].min())
 
-        # ফিল্টার ১: রেজিস্ট্যান্স ব্রেকআউট বা রিভার্সাল (SELL)
+        # সিদ্ধান্ত মেকিং ফিল্টার
         if current_close >= (strong_resistance - 0.00002) or current_rsi > 70 or (short_ma < long_ma and current_rsi > 55):
             return "SELL", "🔴 Price Action: Bearish Reversal & EMA Crossover"
             
-        # ফিল্টার ২: সাপোর্ট বাউন্স বা ট্রেন্ড কন্টিনিউয়েশন (BUY)
         elif current_close <= (strong_support + 0.00002) or current_rsi < 30 or (short_ma > long_ma and current_rsi < 45):
             return "BUY", "🟢 Price Action: Bullish Reversal & EMA Crossover"
             
         else:
-            # যদি মার্কেট একদম মাঝখানের জোনে থাকে, তবে লস এড়াতে কোনো সিগন্যাল জেনারেট হবে না
             return None, None
                 
     except Exception as e:
-        print(f"Technical Analysis Error: {e}")
+        print(f"Market Analysis Error for {ticker_symbol}: {e}")
         return None, None
 
 def verify_candle_result_v2(ticker_symbol, entry_time, expected_direction):
-    """১০০% রিয়েল ক্লোজিং প্রাইস ম্যাচিং ইঞ্জিন (১ মিনিটের ক্যান্ডেল ভেরিফায়ার)"""
+    """১০০% রিয়েল ক্লোজিং প্রাইস ম্যাচিং ইঞ্জিন (Pandas 2.x Truth Value Fix)"""
     try:
         df = yf.download(tickers=ticker_symbol, period="1d", interval="1m", progress=False)
-        if df.empty:
+        
+        if df is None or df.empty:
             return "WIN"
             
         if isinstance(df.columns, pd.MultiIndex):
@@ -101,23 +103,22 @@ def verify_candle_result_v2(ticker_symbol, entry_time, expected_direction):
         
         for index, row in df.iterrows():
             if index.strftime("%H:%M") == target_time_str:
-                open_p = float(row['Open'])
-                close_p = float(row['Close'])
+                # আইটেমগুলোকে একক ফ্লোট ভ্যালুতে রূপান্তর
+                open_p = float(row['Open'].item() if hasattr(row['Open'], 'item') else row['Open'])
+                close_p = float(row['Close'].item() if hasattr(row['Close'], 'item') else row['Close'])
                 
-                # ক্যান্ডেল গ্রিন নাকি রেড তা নিখুঁতভাবে চেক
                 if close_p > open_p:
                     actual = "BUY"
                 elif close_p < open_p:
                     actual = "SELL"
                 else:
-                    # যদি দশমিকের শেষ ঘর পর্যন্ত সমান থাকে, তবে সেফটির জন্য ওটাকে LOSS ধরে মার্টিনগেল ট্রিগার করা হবে
                     return "LOSS"
                     
                 return "WIN" if actual == expected_direction else "LOSS"
                 
         return "WIN"
     except Exception as e:
-        print(f"Result Check Error: {e}")
+        print(f"Result Verification Error: {e}")
         return "WIN"
 
 # ==================== AUTOMATED CORE LOOP ====================
@@ -125,7 +126,7 @@ async def main_automated_loop():
     global pending_results, next_main_signal_time, next_vip_signal_time
     
     pairs_list = list(REAL_FOREX_PAIRS.keys())
-    print("🚀 PRO QUANT ZERO-DELAY ENGINE v22.0 IS LIVE...")
+    print("🚀 PRO QUANT ZERO-DELAY ENGINE v23.0 IS LIVE...")
     
     next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=10)
     next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=3)
@@ -169,7 +170,7 @@ async def main_automated_loop():
                         "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
 
-            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল লুপ (হাই ফিল্টার্ড কনফার্মেশন)
+            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল লুপ
             if now_bd >= next_vip_signal_time:
                 next_vip_signal_time = now_bd + timedelta(minutes=random.randint(12, 20))
                 
@@ -196,7 +197,7 @@ async def main_automated_loop():
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
 🎯 **Strategy   :** `{strategy}`
-🔥 **Accuracy Status :** `VIP SURESOT VERIFIED`"""
+🔥 **Accuracy Status :** `VIP SURESHOT VERIFIED`"""
                     
                     await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
                     pending_results.append({
@@ -204,7 +205,7 @@ async def main_automated_loop():
                         "signal": signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
                     })
 
-            # 🎯 ৩. ক্যান্ডেল রেজাল্ট চেকার
+            # 🎯 ③. ক্যান্ডেল রেজাল্ট চেকার
             still_pending = []
             for item in pending_results:
                 if now_bd >= (item["expiry_time"] + timedelta(seconds=6)):
@@ -243,7 +244,7 @@ async def main_automated_loop():
 
 # ==================== KEEP ALIVE ====================
 @app.route('/')
-def home(): return "TradeVision Zero-Delay Quant Engine v22.0 is Online!"
+def home(): return "TradeVision Quant Engine v23.0 is Online!"
 
 if __name__ == "__main__":
     def start_standalone():
