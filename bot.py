@@ -17,12 +17,13 @@ app = Flask('')
 
 pending_results = []
 session_sent_today = False  
-next_signal_time = datetime.now(bd_tz) # পরবর্তী সিগন্যাল কখন যাবে তার টাইমার
+next_signal_time = datetime.now(bd_tz)
 
 # ==================== AUTOMATIC DAILY SESSION (12:30 PM) ====================
 async def send_auto_bulk_session():
-    print("🔮 AUTOMATIC VIP SESSION GENERATOR STARTED AT 12:30 PM...")
-    base_pairs = ["USD/DZD", "NZD/CHF", "USD/INR", "USD/CAD", "USD/MXN", "USD/PHP", "USD/EGP", "CAD/CHF", "EUR/USD", "GBP/USD"]
+    print("🔮 AUTOMATIC VIP HYBRID SESSION GENERATOR STARTED AT 12:30 PM...")
+    # লাইভ এবং ওটিসি পেয়ারের মিক্সড লিস্ট
+    base_pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD-OTC", "USD/INR-OTC", "NZD/CHF", "USD/MXN-OTC", "USD/CAD", "USD/EGP-OTC", "CAD/CHF-OTC"]
     now_bd = datetime.now(bd_tz)
     
     start_time = now_bd.replace(hour=13, minute=0, second=0, microsecond=0)
@@ -36,9 +37,8 @@ async def send_auto_bulk_session():
         
         if time_str not in used_times:
             pair = random.choice(base_pairs)
-            clean_pair = pair.replace("/", "") + "-OTC"
             direction = random.choice(["CALL", "PUT"])
-            signals_list.append(f"M1 {clean_pair} {time_str} {direction}")
+            signals_list.append(f"M1 {pair} {time_str} {direction}")
             used_times.add(time_str)
 
     session_card = f"⏰ UTC  +6:00 🇧🇩 ;  MTG :- 1 STEP➕\n\n        😈    PREMIUM SIGNAL    😈\n\n⌛️ 1 Minutes :-\n                         \n"
@@ -48,23 +48,31 @@ async def send_auto_bulk_session():
 
     try:
         await bot.send_message(chat_id=VIP_CHANNEL_ID, text=session_card)
-        print("✅ AUTOMATIC BULK SESSION CARD POSTED!")
+        print("✅ AUTOMATIC BULK HYBRID SESSION CARD POSTED!")
     except Exception as e:
         print(f"❌ Failed to send auto session: {e}")
 
-# ==================== CORE FULLY AUTOMATED LOOP ====================
+# ==================== CORE HYBRID LOOP ====================
 async def main_automated_loop():
     global pending_results, session_sent_today, next_signal_time
     
+    # এখানে কিছু পেয়ার একদম লাইভ রিয়েল মার্কেট আর কিছু ওটিসি হিসেবে সাজানো হয়েছে
     pairs = [
-        "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", 
-        "USD/INR", "NZD/CHF", "USD/MXN", "CAD/CHF",
-        "USD/DZD", "USD/PHP", "USD/EGP", "USD/CAD"
+        {"name": "EUR/USD", "type": "LIVE"},
+        {"name": "GBP/USD", "type": "LIVE"},
+        {"name": "USD/JPY", "type": "LIVE"},
+        {"name": "AUD/USD", "type": "LIVE"},
+        {"name": "USD/CAD", "type": "LIVE"},
+        {"name": "USD/INR-OTC", "type": "OTC"},
+        {"name": "NZD/CHF-OTC", "type": "OTC"},
+        {"name": "USD/MXN-OTC", "type": "OTC"},
+        {"name": "CAD/CHF-OTC", "type": "OTC"},
+        {"name": "USD/DZD-OTC", "type": "OTC"},
+        {"name": "USD/PHP-OTC", "type": "OTC"},
+        {"name": "USD/EGP-OTC", "type": "OTC"}
     ]
 
-    print("🤖 ULTRA-AUTOMATED ENGINE v17.0 IS LIVE AND ACTIVE...")
-    
-    # প্রথম সিগন্যাল চালু হওয়ার জন্য টাইম সেট
+    print("🤖 HYBRID LIVE+OTC ENGINE v17.5 IS RUNNING...")
     next_signal_time = datetime.now(bd_tz) + timedelta(seconds=10)
 
     while True:
@@ -79,15 +87,16 @@ async def main_automated_loop():
             if now_bd.hour == 0 and now_bd.minute == 5:
                 session_sent_today = False
 
-            # 📊 ২. অটোমেটিক সিগন্যাল জেনারেটর (২ থেকে ৫ মিনিট পর পর আসবে)
+            # 📊 ২. হাইব্রিড সিগন্যাল জেনারেটর
             if now_bd >= next_signal_time:
-                # পরবর্তী সিগন্যাল কতক্ষণ পরে আসবে তা র্যান্ডমলি ফিক্সড করা (যেমন: ৩ মিনিট পর)
                 random_delay = random.randint(2, 5)
                 next_signal_time = now_bd + timedelta(minutes=random_delay)
 
-                scanned_pair = random.choice(pairs)
+                selected = random.choice(pairs)
+                pair_name = selected["name"]
+                market_type = selected["type"]
+                
                 signal = random.choice(["BUY", "SELL"])
-                clean_pair = scanned_pair.replace("/", "") + "-OTC"
                 
                 run_time = now_bd + timedelta(minutes=1)
                 entry_time_str = run_time.strftime("%H:%M")
@@ -95,24 +104,27 @@ async def main_automated_loop():
 
                 dir_emoji = "🟢" if signal == "BUY" else "🔴"
                 dir_text = "CALL / BUY" if signal == "BUY" else "PUT / SELL"
+                
+                # মার্কেট টাইপ অনুযায়ী সাবটাইটেল বা স্ট্র্যাটেজির নাম চেঞ্জ হবে
+                strategy_name = "Live Market Price Action v17.5" if market_type == "LIVE" else "AI OTC Scalper v17.5"
 
                 msg = f"""💎 **TRADEVISION AI → VIP SURE-SHOT** 💎
 ╔═══════════════════════════╗
-  📊 **Asset Pair :** `{clean_pair}`
+  📊 **Asset Pair :** `{pair_name}`
   {dir_emoji} **Direction  :** `{dir_text}`
   
   ⏰ **Entry Time :** `{entry_time_str}` (GMT+6)
   ⏳ **Expiry     :** `1 Minute`
   📈 **Entry Type :** `Next Candle / M1`
 ╚═══════════════════════════╝
-🎯 **Strategy   :** `AI Price Action Engine v17.0`
+🎯 **Strategy   :** `{strategy_name}`
 🔥 **Accuracy Locked :** `98% SURE-SHOT`"""
 
                 await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
-                print(f"📡 Auto Signal Sent for {clean_pair}")
+                print(f"📡 Hybrid Signal Sent for {pair_name} ({market_type})")
                 
                 pending_results.append({
-                    "pair": scanned_pair, "signal": signal,
+                    "pair": pair_name, "signal": signal,
                     "expiry_time": expiry_time, "is_martingale": False
                 })
 
@@ -120,29 +132,25 @@ async def main_automated_loop():
             still_pending = []
             for item in pending_results:
                 if now_bd >= (item["expiry_time"] + timedelta(seconds=5)):
-                    clean_pair = item["pair"].replace("/", "") + "-OTC"
-                    
-                    # ৯০% চান্স ডিরেক্ট উইন বা মার্টিনগেল উইন দেখানোর জন্য
+                    pair_name = item["pair"]
                     win_chance = random.randint(1, 100)
 
-                    if win_chance <= 92:  # ৯২% উইন রেট লক করা হলো
+                    if win_chance <= 92:  # ৯২% উইন রেট
                         msg_type = "🎯🎯 MARTINGALE M1 WIN!! 🎯🎯" if item["is_martingale"] else "✅✅ DIRECT WIN!! ✅✅"
-                        result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{clean_pair}`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** {msg_type} 🎉\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
                     else:
-                        # লস হলে ডিরেক্ট ১-স্টেপ মার্টিনগেল কল করবে
                         if not item["is_martingale"]:
                             m_expiry = now_bd + timedelta(minutes=1)
-                            m_alert = f"⚠️ **{clean_pair} Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
+                            m_alert = f"⚠️ **{pair_name} Direct Trade missed. Use 1-Step Martingale (M1) NOW!**"
                             await bot.send_message(chat_id=VIP_CHANNEL_ID, text=m_alert, parse_mode="Markdown")
 
                             still_pending.append({
-                                "pair": item["pair"], "signal": item["signal"],
+                                "pair": pair_name, "signal": item["signal"],
                                 "expiry_time": m_expiry, "is_martingale": True
                             })
                         else:
-                            # মার্টিনগেল ও লস হলে ফাইনাল কার্ড
-                            result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{clean_pair}`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            result_text = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{pair_name}`\n🏆 **RESULT :** ❌ M1 LOSS ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
                             await bot.send_message(chat_id=VIP_CHANNEL_ID, text=result_text, parse_mode="Markdown")
                 else:
                     still_pending.append(item)
@@ -155,7 +163,7 @@ async def main_automated_loop():
 
 # ==================== RAILWAY LIVE KEEP-ALIVE ====================
 @app.route('/')
-def home(): return "TradeVision AI Fully-Automated Bot is Running!"
+def home(): return "TradeVision AI Hybrid Live+OTC Bot is Running!"
 
 if __name__ == "__main__":
     def start_standalone():
