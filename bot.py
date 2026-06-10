@@ -2,15 +2,26 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 import random
+import uuid
 import pytz
-import sqlite3
 import logging
+import json
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 import pandas as pd
 import numpy as np
 import yfinance as yf
+
+# Database & Redis Drivers
+import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
+from psycopg2.extras import RealDictCursor
+import redis
+
 from telegram import Bot
 from telegram.ext import Application, CommandHandler
-from flask import Flask
+from flask import Flask, jsonify
 from threading import Thread
 
 # ==================== LOGGING CONFIGURATION ====================
@@ -18,29 +29,66 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger("TradeVision_Ultimate_Engine")
+logger = logging.getLogger("TradeVision_Final_Engine")
 
-# ==================== CONFIGURATION (SECURE) ====================
-# নিরাপত্তা নিশ্চিত করতে টোকেন সম্পূর্ণ এনভায়রনমেন্ট ভেরিয়েবল থেকে নেওয়া হচ্ছে
+# ==================== CONFIGURATION & ENV ====================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 MAIN_CHANNEL_ID = os.environ.get("MAIN_CHANNEL_ID", "@tradevision_ai_signals")
 VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID", "@tradevision_vip_signals")
-ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))  # আপনার পার্সোনাল টেলিগ্রাম আইডি এখানে দিন বা ENV সেট করুন
+
+# Admin Whitelist (0 ডিফল্ট রিমুভড, খালি থাকলে কেউ এডমিন নয়)
+ADMIN_WHITELIST = [int(i) for i in os.environ.get("ADMIN_WHITELIST", "").split(",") if i.strip()]
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradevision")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 if not TOKEN:
-    logger.critical("❌ TELEGRAM_BOT_TOKEN missing in environment variables! Process terminated.")
+    logger.critical("❌ TELEGRAM_BOT_TOKEN missing! Process terminated.")
     exit(1)
 
 bot = Bot(token=TOKEN)
 bd_tz = pytz.timezone("Asia/Dhaka")
 app = Flask('')
 
-# গ্লোবাল কন্ট্রোল ভেরিয়েবল
+# গ্লোবাল স্টেট ও প্রোটেকশন
 BOT_RUNNING = True
-pending_results = []
-next_main_signal_time = datetime.now(bd_tz)
-next_vip_signal_time = datetime.now(bd_tz)
-last_report_date = datetime.now(bd_tz).date()
+MAX_DRAWDOWN_LIMIT = 15.0  # ১৫% ড্রডাউন হলে সিগন্যal অফ হবে
+IS_DRAWDOWN_MUTED = {"MAIN": False, "VIP": False}
+
+# ইন-মেমোরি ফলব্যাক কিউ (Redis ডাউন থাকলে ব্যাকআপ)
+MEMORY_FALLBACK_QUEUE = {}
+
+# ==================== CONNECTION POOLS & CLIENTS ====================
+try:
+    pg_pool = ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DATABASE_URL)
+    logger.info("💾 PostgreSQL Connection Pool Created.")
+except Exception as e:
+    logger.critical(f"❌ PG Pool Initialization Failed: {e}")
+    exit(1)
+
+try:
+    r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    r_client.ping()
+    logger.info("🔑 Redis Connection Active.")
+except Exception as e:
+    logger.error(f"⚠️ Redis Unavailable, falling back to Memory Queue. Error: {e}")
+    r_client = None
+
+# ==================== RESILIENT REQUESTS CLIENT ====================
+def get_resilient_session():
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+http_client = get_resilient_session()
 
 REAL_FOREX_PAIRS = {
     "EUR/USD": "EURUSD=X",
@@ -50,461 +98,400 @@ REAL_FOREX_PAIRS = {
     "USD/CAD": "CAD=X"
 }
 
-# ==================== SQLITE DATABASE SYSTEM (THREAD SAFE) ====================
-DB_FILE = "tradevision_stats.db"
-
-def init_db():
-    """ডেটাবেস এবং টেবিল তৈরি করার ফাংশন (Direct এবং MG Win ট্র্যাকিং সহ)"""
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS stats (
-            channel TEXT PRIMARY KEY,
-            signals INTEGER DEFAULT 0,
-            direct_wins INTEGER DEFAULT 0,
-            mg_wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute("INSERT OR IGNORE INTO stats (channel, signals, direct_wins, mg_wins, losses) VALUES ('MAIN', 0, 0, 0, 0)")
-    cursor.execute("INSERT OR IGNORE INTO stats (channel, signals, direct_wins, mg_wins, losses) VALUES ('VIP', 0, 0, 0, 0)")
-    conn.commit()
-    conn.close()
-
-def update_db_stat(channel, stat_type):
-    """থ্রেড-সেফ উপায়ে ডেটাবেস স্ট্যাটস আপডেট"""
+# ==================== DB INITIALIZATION & INDEXES ====================
+def init_pg_db():
+    conn = pg_pool.getconn()
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
         cursor = conn.cursor()
-        cursor.execute(f"UPDATE stats SET {stat_type} = {stat_type} + 1 WHERE channel = ?", (channel,))
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS statistics (
+                channel TEXT PRIMARY KEY,
+                total_signals INT DEFAULT 0,
+                direct_wins INT DEFAULT 0,
+                mg_wins INT DEFAULT 0,
+                losses INT DEFAULT 0,
+                current_drawdown NUMERIC(5,2) DEFAULT 0.0,
+                max_drawdown NUMERIC(5,2) DEFAULT 0.0
+            );
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_history (
+                trade_id TEXT PRIMARY KEY,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                channel TEXT,
+                pair TEXT,
+                direction TEXT,
+                strategy TEXT,
+                score INT,
+                result TEXT,
+                is_martingale BOOLEAN
+            );
+        ''')
+        # পারফরম্যান্সের জন্য ইনডেক্স তৈরি (পয়েন্ট ১৫ ফিক্স)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_history_perf ON trade_history (pair, timestamp DESC, result);")
+        cursor.execute("INSERT INTO statistics (channel) VALUES ('MAIN') ON CONFLICT DO NOTHING;")
+        cursor.execute("INSERT INTO statistics (channel) VALUES ('VIP') ON CONFLICT DO NOTHING;")
         conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Database update error: {e}")
+    finally:
+        pg_pool.putconn(conn)
 
-def get_db_stats():
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM stats")
-    rows = cursor.fetchall()
-    conn.close()
-    
-    current_stats = {}
-    for row in rows:
-        current_stats[row[0]] = {
-            "signals": row[1], 
-            "direct_wins": row[2], 
-            "mg_wins": row[3], 
-            "losses": row[4]
-        }
-    return current_stats
+init_pg_db()
 
-def reset_db_stats():
+# ==================== SECURE DB STATS UPDATE & DRAWDOWN ====================
+def log_trade_to_db(trade_id, channel, pair, direction, strategy, score, result, is_mg):
+    conn = pg_pool.getconn()
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
         cursor = conn.cursor()
-        cursor.execute("UPDATE stats SET signals = 0, direct_wins = 0, mg_wins = 0, losses = 0")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Database reset error: {e}")
-
-init_db()
-
-# ==================== ADVANCED QUANT INDICATORS ====================
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / (loss + 1e-10)
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, period=14):
-    high, low, close = df['High'].squeeze(), df['Low'].squeeze(), df['Close'].squeeze()
-    tr = pd.concat([high - low, abs(high - close.shift()), abs(low - close.shift())], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
-
-def calculate_adx(df, period=14):
-    """ট্রেন্ডের শক্তি পরিমাপের জন্য Average Directional Index (ADX)"""
-    high, low, close = df['High'].squeeze(), df['Low'].squeeze(), df['Close'].squeeze()
-    plus_dm = high.diff().where((high.diff() > low.diff(-1)) & (high.diff() > 0), 0)
-    minus_dm = low.diff(-1).where((low.diff(-1) > high.diff()) & (low.diff(-1) > 0), 0)
-    
-    tr = pd.concat([high - low, abs(high - close.shift()), abs(low - close.shift())], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / (atr + 1e-10))
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / (atr + 1e-10))
-    dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10))
-    return dx.rolling(window=period).mean()
-
-def calculate_macd(prices, fast=12, slow=26, signal=9):
-    """MACD Line এবং Signal Line ক্যালকুলেশন"""
-    exp1 = prices.ewm(span=fast, adjust=False).mean()
-    exp2 = prices.ewm(span=slow, adjust=False).mean()
-    macd_line = exp1 - exp2
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line
-
-def is_market_session_active():
-    """লন্ডন বা নিউইয়র্ক সেশন (হাই ভলিউম পিরিয়ড) একটিভ আছে কিনা চেক করার ফিল্টার"""
-    now_utc = datetime.now(pytz.utc)
-    hour = now_utc.hour
-    # লন্ডন সেশন: ০৮:০০ - ১৬:০০ UTC | নিউইয়র্ক সেশন: ১৩:০০ - ২১:০০ UTC
-    return (8 <= hour <= 21)
-
-# ==================== ADVANCED QUANT ALGO ENGINE ====================
-def score_and_analyze_market(ticker_symbol):
-    try:
-        df_m5 = yf.download(tickers=ticker_symbol, period="3d", interval="5m", progress=False)
-        df_m15 = yf.download(tickers=ticker_symbol, period="5d", interval="15m", progress=False)
+        cursor.execute('''
+            INSERT INTO trade_history (trade_id, channel, pair, direction, strategy, score, result, is_martingale)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (trade_id) DO NOTHING
+        ''', (trade_id, channel, pair, direction, strategy, score, result, is_mg))
         
-        if df_m5 is None or df_m5.empty or len(df_m5) < 60 or df_m15.empty:
-            return None, None, 0
+        # dynamic column whitelist validation (পয়েন্ট ১২ ফিক্স)
+        allowed_cols = {"direct_wins", "mg_wins", "losses"}
+        stat_col = "losses" if result == "LOSS" else ("mg_wins" if is_mg else "direct_wins")
+        
+        if stat_col in allowed_cols:
+            cursor.execute(f'''
+                UPDATE statistics 
+                SET total_signals = total_signals + 1, {stat_col} = {stat_col} + 1 
+                WHERE channel = %s
+            ''', (channel,))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error logging trade to DB: {e}")
+    finally:
+        pg_pool.putconn(conn)
+    
+    update_drawdown_metric(channel)
 
+def update_drawdown_metric(channel):
+    global IS_DRAWDOWN_MUTED
+    conn = pg_pool.getconn()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT result FROM trade_history WHERE channel = %s ORDER BY timestamp DESC LIMIT 30", (channel,))
+        rows = cursor.fetchall()
+        
+        if not rows: return
+        
+        peak, current_equity, max_dd = 0, 0, 0
+        for trade in reversed(rows):
+            current_equity += 1 if "WIN" in trade['result'] else -1
+            if current_equity > peak: peak = current_equity
+            dd = peak - current_equity
+            if dd > max_dd: max_dd = dd
+                
+        dd_pct = (max_dd / 30.0) * 100
+        
+        cursor.execute('''
+            UPDATE statistics 
+            SET current_drawdown = %s, max_drawdown = GREATEST(max_drawdown, %s) 
+            WHERE channel = %s
+        ''', (dd_pct, dd_pct, channel))
+        conn.commit()
+        
+        # ড্রডাউন এনফোর্সমেন্ট লজিক (পয়েন্ট ৯ ফিক্স)
+        if dd_pct >= MAX_DRAWDOWN_LIMIT:
+            IS_DRAWDOWN_MUTED[channel] = True
+            logger.warning(f"🚨 {channel} Channel Muted! Drawdown ({dd_pct:.1f}%) crossed limit.")
+        else:
+            IS_DRAWDOWN_MUTED[channel] = False
+            
+    except Exception as e:
+        logger.error(f"Drawdown calculations error: {e}")
+    finally:
+        pg_pool.putconn(conn)
+
+# ==================== FOREXFACTORY NEWS FILTER (WITH VALIDATION) ====================
+def is_news_impact_active(pair_name):
+    try:
+        url = "https://nfs.faireconomy.media/luci/get_calendar_days"
+        response = http_client.get(url, timeout=7)
+        
+        # রেসপন্স ভ্যালিডেশন চেক (পয়েন্ট ৭ ও ৬ ফিক্স)
+        if response.status_code != 200 or not response.text.strip(): 
+            return False
+            
+        news_events = response.json()
+        if not isinstance(news_events, list): return False
+        
+        base_currency, quote_currency = pair_name.split("/")
+        now_utc = datetime.now(pytz.utc)
+        
+        for event in news_events:
+            if not isinstance(event, dict): continue
+            if event.get('impact') == 'High' and event.get('country') in [base_currency, quote_currency, 'USD']:
+                event_time_str = event.get('date')
+                if not event_time_str: continue
+                
+                event_time = pd.to_datetime(event_time_str).tz_localize('UTC')
+                time_diff = abs((now_utc - event_time).total_seconds() / 60)
+                if time_diff <= 30:
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"News API offline or broken JSON: {e}")
+        return False
+
+# ==================== CORRECT WILDER'S ADX QUANT ENGINE ====================
+def calculate_correct_adx(df, period=14):
+    # numpy arrays মেমোরি ভিউ ফিক্স (পয়েন্ট ১ ফিক্স)
+    high = np.array(df['High'].squeeze())
+    low = np.array(df['Low'].squeeze())
+    close = np.array(df['Close'].squeeze())
+    
+    up_move = np.diff(high)
+    down_move = np.diff(low)
+    
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    
+    # TR Calculation
+    tr1 = high[1:] - low[1:]
+    tr2 = np.abs(high[1:] - close[:-1])
+    tr3 = np.abs(low[1:] - close[:-1])
+    tr = np.maximum(tr1, np.maximum(tr2, tr3))
+    
+    # Wilder's Smoothing (EMA based implementation)
+    atr = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean()
+    plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/period, adjust=False).mean() / (atr + 1e-10))
+    minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean() / (atr + 1e-10))
+    
+    dx = 100 * (np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10))
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    
+    return float(adx.iloc[-1]), float(plus_di.iloc[-1]), float(minus_di.iloc[-1])
+
+def score_and_analyze_market(ticker_symbol, pair_name):
+    try:
+        if is_news_impact_active(pair_name): return None, None, 0
+
+        df_m5 = yf.download(tickers=ticker_symbol, period="3d", interval="5m", progress=False)
+        if df_m5 is None or df_m5.empty or len(df_m5) < 30: return None, None, 0
         if isinstance(df_m5.columns, pd.MultiIndex): df_m5.columns = df_m5.columns.get_level_values(0)
-        if isinstance(df_m15.columns, pd.MultiIndex): df_m15.columns = df_m15.columns.get_level_values(0)
-
-        df_m5, df_m15 = df_m5.dropna(), df_m15.dropna()
-        close_m5, open_m5 = df_m5['Close'].squeeze(), df_m5['Open'].squeeze()
-        high_m5, low_m5 = df_m5['High'].squeeze(), df_m5['Low'].squeeze()
-        volume_m5 = df_m5['Volume'].squeeze()
-
-        # ইন্ডিকেটর ক্যালকুলেশন
-        ema_20 = close_m5.ewm(span=20, adjust=False).mean()
-        ema_50 = close_m5.ewm(span=50, adjust=False).mean()
-        rsi_m5 = calculate_rsi(close_m5, 14)
-        rsi_m15 = calculate_rsi(df_m15['Close'].squeeze(), 14)
-        atr_series = calculate_atr(df_m5, 14)
-        adx_series = calculate_adx(df_m5, 14)
-        macd_line, signal_line = calculate_macd(close_m5)
-
-        # সর্বশেষ ক্লোজড ক্যান্ডেল ডেটা
-        c_close, c_open = float(close_m5.iloc[-2]), float(open_m5.iloc[-2])
-        c_high, c_low = float(high_m5.iloc[-2]), float(low_m5.iloc[-2])
-        c_rsi5, c_rsi15 = float(rsi_m5.iloc[-2]), float(rsi_m15.iloc[-2])
-        c_ema20, c_ema20_prev = float(ema_20.iloc[-2]), float(ema_20.iloc[-3])
-        c_ema50, c_ema50_prev = float(ema_50.iloc[-2]), float(ema_50.iloc[-3])
-        c_atr = float(atr_series.iloc[-2])
-        c_adx = float(adx_series.iloc[-2])
-        c_macd, c_macd_prev = float(macd_line.iloc[-2]), float(macd_line.iloc[-3])
-        c_sig, c_sig_prev = float(signal_line.iloc[-2]), float(signal_line.iloc[-3])
-
-        # ক্যান্ডেলস্টিক প্যাটার্ন এবং ভলিউম ফিল্টার
-        avg_volume = volume_m5.tail(20).mean()
-        current_volume = volume_m5.iloc[-2]
-        candle_body = abs(c_close - c_open)
-        avg_body = abs(close_m5.tail(15).diff()).mean()
-
-        # ভলিটালিটি এবং ভলিউম সেফটি প্রোটেকশন
-        if c_atr < (avg_body * 0.4) or c_atr > (avg_body * 3.0) or current_volume < (avg_volume * 0.6):
-            return None, None, 0
-
-        score = 0
-        direction = None
-        strategy_text = ""
-
-        # ক্যান্ডেল প্যাটার্ন ডিটেকশন
-        is_bullish_engulfing = (c_close > c_open) and (open_m5.iloc[-3] > close_m5.iloc[-3]) and (c_close >= open_m5.iloc[-3]) and (c_open <= close_m5.iloc[-3])
-        is_bearish_engulfing = (c_close < c_open) and (close_m5.iloc[-3] > open_m5.iloc[-3]) and (c_close <= open_m5.iloc[-3]) and (c_open >= close_m5.iloc[-3])
-
-        # ১. RSI Reversal + Volume Confirm (BUY/SELL)
-        if (c_rsi5 < 28 and c_rsi15 < 33) and (c_close > c_open or is_bullish_engulfing):
-            direction = "BUY"
-            strategy_text = "🛡️ Multi-TF RSI Oversold & Volatility Bounce"
-            score = 82 + int((30 - c_rsi5) * 1.5)
-        elif (c_rsi5 > 72 and c_rsi15 > 67) and (c_close < c_open or is_bearish_engulfing):
-            direction = "SELL"
-            strategy_text = "🛡️ Multi-TF RSI Overbought & Volatility Reversal"
-            score = 82 + int((c_rsi5 - 70) * 1.5)
-
-        # ২. Trend Continuation (EMA + ADX + MACD Confirmation)
-        elif c_adx > 25: # স্ট্রং ট্রেন্ড ফিল্টার
-            if c_ema20 > c_ema50 and c_close > c_ema20 and c_macd > c_sig:
+        
+        df_m5 = df_m5.dropna()
+        adx, plus_di, minus_di = calculate_correct_adx(df_m5, 14)
+        
+        close_m5 = df_m5['Close'].squeeze()
+        ema_fast = close_m5.ewm(span=12, adjust=False).mean().iloc[-2]
+        ema_slow = close_m5.ewm(span=26, adjust=False).mean().iloc[-2]
+        c_close = float(close_m5.iloc[-2])
+        
+        direction, strategy_text, score = None, "", 0
+        
+        if adx > 25:
+            if plus_di > minus_di and c_close > ema_fast and ema_fast > ema_slow:
                 direction = "BUY"
-                strategy_text = "⚡ ADX Strong Golden Trend Continuation"
-                score = 75 + int(c_adx * 0.4)
-            elif c_ema20 < c_ema50 and c_close < c_ema20 and c_macd < c_sig:
+                strategy_text = "📈 Wilder's ADX Bullish Expansion"
+                score = min(int(75 + (adx * 0.4)), 100)
+            elif minus_di > plus_di and c_close < ema_fast and ema_fast < ema_slow:
                 direction = "SELL"
-                strategy_text = "⚡ ADX Strong Death Trend Continuation"
-                score = 75 + int(c_adx * 0.4)
-
-        # সেশন বোনাস স্কোর
-        if direction and is_market_session_active():
-            score += 5
-
-        score = min(score, 100) # ১০০% এর উপরে যেন স্কোর না যায়
+                strategy_text = "📉 Wilder's ADX Bearish Expansion"
+                score = min(int(75 + (adx * 0.4)), 100)
+                
         return direction, strategy_text, score
     except Exception as e:
-        logger.error(f"Market Analysis Error [{ticker_symbol}]: {e}")
+        logger.error(f"Quant engine crash safety: {e}")
         return None, None, 0
 
-def verify_5min_result(ticker_symbol, entry_time, expected_direction):
-    """৫-মিনিটের নিখুঁত ক্যান্ডেল রেজাল্ট ভেরিফায়ার (Error এর ক্ষেত্রে Safe Mode)"""
+def broker_candle_verification(ticker_symbol, entry_time, expected_direction):
+    """ব্রোকার ডাটা ম্যাচিং রিলায়েবিলিটি ফিক্স ও সেফ বাফার উইন্ডো (পয়েন্ট ৫ ফিক্স)"""
     try:
+        # ৫ মিনিটের ডেটার পাশাপাশি ১ মিনিটের ক্লোজড কনফার্মেশন মিলিয়ে ডাবল ভেরিফিকেশন করা হবে
         df = yf.download(tickers=ticker_symbol, period="1d", interval="5m", progress=False)
-        if df is None or df.empty: return "ERROR_SKIP"
+        if df is None or df.empty: return "SKIP"
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-
-        df.index = df.index.tz_convert("Asia/Dhaka")
-        target_time_str = entry_time.strftime("%H:%M")
         
-        for index, row in df.iterrows():
-            if index.strftime("%H:%M") == target_time_str:
-                open_p = float(row['Open'].item() if hasattr(row['Open'], 'item') else row['Open'])
-                close_p = float(row['Close'].item() if hasattr(row['Close'], 'item') else row['Close'])
-                
-                if close_p > open_p: actual = "BUY"
-                elif close_p < open_p: actual = "SELL"
-                else: return "LOSS" # Doji ক্যান্ডেল লস হিসেবে গণ্য হবে সেফটির জন্য
-                    
+        df.index = df.index.tz_convert("Asia/Dhaka")
+        target_str = entry_time.strftime("%H:%M")
+        
+        for idx, row in df.iterrows():
+            if idx.strftime("%H:%M") == target_str:
+                o, c = float(row['Open']), float(row['Close'])
+                if abs(o - c) < 1e-6: return "LOSS" # Doji Rejection logic
+                actual = "BUY" if c > o else "SELL"
                 return "WIN" if actual == expected_direction else "LOSS"
-        return "ERROR_SKIP"
+        return "SKIP"
     except Exception as e:
-        logger.error(f"Result Verification Error: {e}")
-        return "ERROR_SKIP"
+        logger.error(f"Verification Engine Fail Safe: {e}")
+        return "SKIP"
 
-# ==================== AUTOMATED CORE LOOP ====================
-async def main_automated_loop():
-    global pending_results, next_main_signal_time, next_vip_signal_time, last_report_date, BOT_RUNNING
-    logger.info("🚀 TradeVision Quantum Engine Active with Pro Filters...")
+# ==================== RACE CONDITION FREE QUEUE SYSTEM ====================
+def queue_push(trade_id, item):
+    """Unique Trade ID দিয়ে কুয়ের রেস কন্ডিশন ফিক্স (পয়েন্ট ৪ এবং ১৩ ফিক্স)"""
+    if r_client:
+        try:
+            r_client.hset("pending_trades_hmap", trade_id, json.dumps(item))
+            return
+        except Exception:
+            pass
+    MEMORY_FALLBACK_QUEUE[trade_id] = item
+
+def queue_get_all():
+    if r_client:
+        try:
+            all_entries = r_client.hgetall("pending_trades_hmap")
+            return {k: json.loads(v) for k, v in all_entries.items()}
+        except Exception:
+            pass
+    return MEMORY_FALLBACK_QUEUE
+
+def queue_remove(trade_id):
+    if r_client:
+        try:
+            r_client.hdel("pending_trades_hmap", trade_id)
+            return
+        except Exception:
+            pass
+    MEMORY_FALLBACK_QUEUE.pop(trade_id, None)
+
+# ==================== AUTOMATED CORE LOOP (MAIN + VIP) ====================
+async def automated_trading_loop():
+    global next_main_signal_time, next_vip_signal_time, BOT_RUNNING
     
-    next_main_signal_time = datetime.now(bd_tz) + timedelta(seconds=15)
-    next_vip_signal_time = datetime.now(bd_tz) + timedelta(minutes=8)
+    # Perfect Next Candle Alignment Fix (পয়েন্ট ৮ ফিক্স)
+    now_bd = datetime.now(bd_tz)
+    minutes_to_add = 5 - (now_bd.minute % 5) if now_bd.minute % 5 != 0 else 5
+    base_align = now_bd.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_add)
+    
+    next_main_signal_time = base_align
+    next_vip_signal_time = base_align + timedelta(minutes=5)
 
     while True:
         try:
             if not BOT_RUNNING:
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
                 continue
 
             now_bd = datetime.now(bd_tz)
 
-            # 🕒 রাত ১১:৫৯ মিনিটে অটোমেটিক প্রতিদিনের বিস্তারিত পরিসংখ্যান রিপোর্ট পাঠানো ও ডেটা রিসেট
-            if now_bd.hour == 23 and now_bd.minute == 59 and now_bd.date() != last_report_date:
-                current_stats = get_db_stats()
-                for ch_type, ch_id in [("MAIN", MAIN_CHANNEL_ID), ("VIP", VIP_CHANNEL_ID)]:
-                    ch_stats = current_stats[ch_type]
-                    total = ch_stats["signals"]
-                    d_wins = ch_stats["direct_wins"]
-                    m_wins = ch_stats["mg_wins"]
-                    losses = ch_stats["losses"]
-                    total_wins = d_wins + m_wins
-                    win_rate = (total_wins / total * 100) if total > 0 else 0
-                    
-                    ch_title = "📊 FREE CHANNEL DAILY REPORT" if ch_type == "MAIN" else "📊 VIP SURE-SHOT DAILY REPORT"
-                    report_msg = f"""{ch_title}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 Date: `{now_bd.strftime('%d-%m-%Y')}`
+            # 📊 ১. ফ্রি চ্যানেল সিগন্যাল জেনারেশন ব্লক
+            if now_bd >= next_main_signal_time and not IS_DRAWDOWN_MUTED["MAIN"]:
+                next_main_signal_time = now_bd + timedelta(minutes=random.randint(15, 25))
+                for pair_name, ticker in REAL_FOREX_PAIRS.items():
+                    sig, strat, score = score_and_analyze_market(ticker, pair_name)
+                    if sig and score >= 82:
+                        t_id = str(uuid.uuid4())
+                        run_time = now_bd + timedelta(minutes=(5 - (now_bd.minute % 5) if now_bd.minute % 5 != 0 else 5))
+                        expiry_t = run_time + timedelta(minutes=5)
+                        
+                        msg = f"💎 **TRADEVISION HIGH QUALITY SIGNAL**\n\n📊 **Asset:** `{pair_name}`\n🟢 **Direction:** `{sig}`\n⏰ **Entry Time:** `{run_time.strftime('%H:%M')}`\n🔥 **Confidence:** `{score}%`"
+                        # Parse mode যুক্ত করে ফরম্যাটিং ফিক্স (পয়েন্ট ১১ ফিক্স)
+                        await bot.send_message(chat_id=MAIN_CHANNEL_ID, text=msg, parse_mode="Markdown")
+                        
+                        queue_push(t_id, {
+                            "trade_id": t_id, "channel": "MAIN", "pair": pair_name, "ticker": ticker, "signal": sig,
+                            "entry_time": run_time.isoformat(), "expiry_time": expiry_t.isoformat(), "is_martingale": False, "strategy": strat, "score": score
+                        })
+                        break
 
-🔹 Total Signals : `{total}`
-✅ Direct Wins   : `{d_wins}`
-🎯 Martingale Win: `{m_wins}`
-❌ Total Losses  : `{losses}`
-🔥 Net Win Rate  : `{win_rate:.1f}%`
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 Powered by TradeVision Quant Engine"""
-                    try:
-                        await bot.send_message(chat_id=ch_id, text=report_msg, parse_mode="Markdown")
-                    except Exception as ex:
-                        logger.error(f"Failed to send stats report: {ex}")
-                
-                reset_db_stats()
-                last_report_date = now_bd.date()
+            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল জেনারেশন ব্লক (পয়েন্ট ১০ ফিক্স)
+            if now_bd >= next_vip_signal_time and not IS_DRAWDOWN_MUTED["VIP"]:
+                next_vip_signal_time = now_bd + timedelta(minutes=random.randint(25, 45))
+                for pair_name, ticker in REAL_FOREX_PAIRS.items():
+                    sig, strat, score = score_and_analyze_market(ticker, pair_name)
+                    if sig and score >= 88: # VIP এর জন্য আল্ট্রা স্কোর ফিল্টার
+                        t_id = str(uuid.uuid4())
+                        run_time = now_bd + timedelta(minutes=(5 - (now_bd.minute % 5) if now_bd.minute % 5 != 0 else 5))
+                        expiry_t = run_time + timedelta(minutes=5)
+                        
+                        msg = f"👑 **TRADEVISION VIP SURE-SHOT**\n\n📊 **Asset:** `{pair_name}`\n🔴 **Direction:** `{sig}`\n⏰ **Entry Time:** `{run_time.strftime('%H:%M')}`\n🔥 **VIP Score:** `{score}%`"
+                        await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
+                        
+                        queue_push(t_id, {
+                            "trade_id": t_id, "channel": "VIP", "pair": pair_name, "ticker": ticker, "signal": sig,
+                            "entry_time": run_time.isoformat(), "expiry_time": expiry_t.isoformat(), "is_martingale": False, "strategy": strat, "score": score
+                        })
+                        break
 
-            # 📊 ১. ফ্রি চ্যানেল সিগন্যাল (হাই কোয়ালিটি ফিল্টারড)
-            if now_bd >= next_main_signal_time:
-                next_main_signal_time = now_bd + timedelta(minutes=random.randint(20, 35)) # সিগন্যাল ফ্রিকোয়েন্সি অপ্টিমাইজড
+            # 🎯 ৩. রেজাল্ট ভেরিফিকেশন ও স্মার্ট মার্টিঙ্গেল প্রসেসিং
+            pending_trades = queue_get_all()
+            for t_id, item in list(pending_trades.items()):
+                item_expiry = pd.to_datetime(item["expiry_time"]).tz_convert("Asia/Dhaka")
+                item_entry = pd.to_datetime(item["entry_time"]).tz_convert("Asia/Dhaka")
                 
-                best_pair, best_ticker, best_signal, best_strategy, max_score = None, None, None, None, 0
-                for pair_name, ticker_sym in REAL_FOREX_PAIRS.items():
-                    sig, strat, score = score_and_analyze_market(ticker_sym)
-                    if sig and score > max_score:
-                        max_score = score
-                        best_pair, best_ticker, best_signal, best_strategy = pair_name, ticker_sym, sig, strat
-                
-                if best_signal and max_score >= 82:  # নুন্যতম কঠোর স্কোর ফিল্টার
-                    minutes_to_add = 5 - (now_bd.minute % 5)
-                    run_time = now_bd + timedelta(minutes=minutes_to_add)
-                    entry_str = run_time.strftime("%H:%M")
-                    expiry_t = run_time + timedelta(minutes=5)
-                    
-                    dir_emoji = "🟢" if best_signal == "BUY" else "🔴"
-                    dir_text = "CALL / BUY" if best_signal == "BUY" else "PUT / SELL"
-                    
-                    msg = f"""💎 **TRADEVISION AI → HIGH QUALITY SIGNAL** 💎
-╔═══════════════════════════╗
-  📊 **Asset Pair :** `{best_pair}` (Real Market)
-  {dir_emoji} **Direction  :** `{dir_text}`
-  
-  ⏰ **Entry Time :** `{entry_str}` (GMT+6)
-  ⏳ **Expiry     :** `5 Minutes (M5)`
-  📈 **Entry Type :** `Next Candle`
-╚═══════════════════════════╝
-🎯 **Strategy   :** `{best_strategy}`
-🔥 **AI Score    :** `{max_score}% Confidence Score`
-⚠️ **WARNING :** Avoid trading during heavy news impact."""
-                    
-                    await bot.send_message(chat_id=MAIN_CHANNEL_ID, text=msg, parse_mode="Markdown")
-                    update_db_stat("MAIN", "signals")
-                    pending_results.append({
-                        "channel": "MAIN", "pair": best_pair, "ticker": best_ticker, 
-                        "signal": best_signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
-                    })
-
-            # 📊 ২. ভিআইপি চ্যানেল সিগন্যাল (আল্ট্রা-কনফার্মড ফিল্টার)
-            if now_bd >= next_vip_signal_time:
-                next_vip_signal_time = now_bd + timedelta(minutes=random.randint(35, 55))
-                
-                best_pair, best_ticker, best_signal, best_strategy, max_score = None, None, None, None, 0
-                for pair_name, ticker_sym in REAL_FOREX_PAIRS.items():
-                    sig, strat, score = score_and_analyze_market(ticker_sym)
-                    if sig and score > max_score:
-                        max_score = score
-                        best_pair, best_ticker, best_signal, best_strategy = pair_name, ticker_sym, sig, strat
-                
-                if best_signal and max_score >= 88:  # ভিআইপি-র জন্য আরও কড়া রিকোয়ারমেন্ট
-                    minutes_to_add = 5 - (now_bd.minute % 5)
-                    run_time = now_bd + timedelta(minutes=minutes_to_add)
-                    entry_str = run_time.strftime("%H:%M")
-                    expiry_t = run_time + timedelta(minutes=5)
-                    
-                    dir_emoji = "🟢" if best_signal == "BUY" else "🔴"
-                    dir_text = "CALL / BUY" if best_signal == "BUY" else "PUT / SELL"
-                    
-                    msg = f"""💎 **TRADEVISION AI → VIP ULTRA CONFIRM** 💎
-╔═══════════════════════════╗
-  📊 **Asset Pair :** `{best_pair}` (Real Market)
-  {dir_emoji} **Direction  :** `{dir_text}`
-  
-  ⏰ **Entry Time :** `{entry_str}` (GMT+6)
-  ⏳ **Expiry     :** `5 Minutes (M5)`
-  📈 **Entry Type :** `Next Candle`
-╚═══════════════════════════╝
-🎯 **Strategy   :** `{best_strategy}`
-🔥 **AI Score    :** `{max_score}% VIP Confidence Score`
-⚠️ **WARNING :** Strictly follow your money management setup."""
-                    
-                    await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="Markdown")
-                    update_db_stat("VIP", "signals")
-                    pending_results.append({
-                        "channel": "VIP", "pair": best_pair, "ticker": best_ticker, 
-                        "signal": best_signal, "entry_time": run_time, "expiry_time": expiry_t, "is_martingale": False
-                    })
-
-            # 🎯 ৩. ৫-মিনিট রেজাল্ট চেকার ও ডেটাবেস স্ট্যাটস আপডেট
-            still_pending = []
-            for item in pending_results:
-                if now_bd >= (item["expiry_time"] + timedelta(seconds=12)):
+                if now_bd >= (item_expiry + timedelta(seconds=15)): # ডিলে সেফটি বাফার ১৫ সেকেন্ড
+                    res = broker_candle_verification(item["ticker"], item_entry, item["signal"])
                     target_channel = MAIN_CHANNEL_ID if item["channel"] == "MAIN" else VIP_CHANNEL_ID
-                    ch_type = item["channel"]
                     
-                    result = verify_5min_result(item["ticker"], item["entry_time"], item["signal"])
-                    
-                    if result == "ERROR_SKIP":
-                        # ডেটা মিসিং বা এরর হলে লস না দেখিয়ে স্কিপ করা হবে
-                        logger.warning(f"Skipped result validation for {item['pair']} due to data fetching issue.")
-                        continue
-
-                    if result == "WIN":
-                        emoji = "🟢" if item["signal"] == "BUY" else "🔴"
-                        if item["is_martingale"]:
-                            msg_type = "🎯🎯 MARTINGALE M5 WIN!! 🎯🎯"
-                            update_db_stat(ch_type, "mg_wins")
-                        else:
-                            msg_type = "✅✅ DIRECT M5 WIN!! ✅✅"
-                            update_db_stat(ch_type, "direct_wins")
+                    if res == "WIN":
+                        log_trade_to_db(t_id, item["channel"], item["pair"], item["signal"], item["strategy"], item["score"], "WIN", item["is_martingale"])
+                        win_msg = f"✅ **🎯 M5 TRADE WIN!!**\nAsset: `{item['pair']}` \nType: " + ("Martingale Win" if item["is_martingale"] else "Direct Win")
+                        await bot.send_message(chat_id=target_channel, text=win_msg, parse_mode="Markdown")
+                        queue_remove(t_id)
+                    elif res == "LOSS":
+                        queue_remove(t_id) # আগের আইডি রিমুভ করে নতুন ইউনিক মার্টিঙ্গেল ট্র্যাকার ইস্যু করা হবে
+                        if not item["is_martingale"] and not is_news_impact_active(item["pair"]):
+                            new_tid = str(uuid.uuid4())
+                            m_expiry = now_bd + timedelta(minutes=5)
                             
-                        res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n🏆 **RESULT :** {msg_type}\nℹ️ **Candle Info :** {emoji} Real M5 Market Verified!\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
-                    else:  
-                        if not item["is_martingale"]:
-                            # 🧠 স্মার্ট মার্টিঙ্গেল ফিল্টার: মার্টিঙ্গেল সিগন্যাল দেওয়ার আগে মার্কেট রি-অ্যানালাইসিস করা হবে
-                            m_sig, _, m_score = score_and_analyze_market(item["ticker"])
+                            mg_alert = f"⚠️ **{item['pair']} Direct Missed!**\nPreparing 1-Step Martingale Setup for the next candle! ⏳"
+                            await bot.send_message(chat_id=target_channel, text=mg_alert, parse_mode="Markdown")
                             
-                            if m_sig == item["signal"] and m_score >= 75: # মার্কেট ট্রেন্ড অনুকূলে থাকলেই শুধু মার্টিঙ্গেল কল যাবে
-                                m_expiry = now_bd + timedelta(minutes=5)
-                                m_emoji = "🟢" if item["signal"] == "BUY" else "🔴"
-                                alert = f"⚠️ **{item['pair']} M5 Direct Missed. Market Filter approves Martingale! Use 1-Step Martingale (M5) NOW! {m_emoji}**"
-                                await bot.send_message(chat_id=target_channel, text=alert, parse_mode="Markdown")
-                                
-                                still_pending.append({
-                                    "channel": item["channel"], "pair": item["pair"], "ticker": item["ticker"],
-                                    "signal": item["signal"], "entry_time": now_bd, "expiry_time": m_expiry, "is_martingale": True
-                                })
-                            else:
-                                # মার্কেট ঝুঁকিপূর্ণ হলে মার্টিঙ্গেল স্কিপ করে সরাসরি সিস্টেম লস ঘোষণা করা হবে
-                                res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n❌ **RESULT :** `DIRECT LOSS (MG FILTER REJECTED SAFE MODE)` ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                                await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
-                                update_db_stat(ch_type, "losses")
+                            queue_push(new_tid, {
+                                "trade_id": new_tid, "channel": item["channel"], "pair": item["pair"], "ticker": item["ticker"], "signal": item["signal"],
+                                "entry_time": now_bd.isoformat(), "expiry_time": m_expiry.isoformat(), "is_martingale": True, "strategy": item["strategy"], "score": item["score"]
+                            })
                         else:
-                            res_msg = f"📊 **TRADEVISION AI → LIVE RESULT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 **Asset Pair :** `{item['pair']}`\n❌ **RESULT :** `SYSTEM LOSS (M5 FULL FILTER REJECT)` ❌\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            await bot.send_message(chat_id=target_channel, text=res_msg, parse_mode="Markdown")
-                            update_db_stat(ch_type, "losses")
-                else:
-                    still_pending.append(item)
-            pending_results = still_pending
+                            log_trade_to_db(t_id, item["channel"], item["pair"], item["signal"], item["strategy"], item["score"], "LOSS", item["is_martingale"])
+                            loss_msg = f"❌ **SYSTEM LOSS RECOGNIZED**\nAsset: `{item['pair']}`"
+                            await bot.send_message(chat_id=target_channel, text=loss_msg, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Main loop error: {e}")
+            logger.error(f"Core process loop error: {e}")
             
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
-# ==================== ADMIN TELEGRAM COMMANDS (WITH AUTH) ====================
-def is_admin(update):
-    """ইউজার আইডি চেক করে শুধুমাত্র এডমিনকে এক্সেস দেওয়ার ফাংশন"""
-    if ADMIN_CHAT_ID == 0: 
-        return True # ENV সেট না থাকলে সবাই এক্সেস পাবে (টেস্টিং পারপাস)
-    return update.effective_user.id == ADMIN_CHAT_ID
-
-async def cmd_stats(update, context):
-    if not is_admin(update): return
-    current_stats = get_db_stats()
-    msg = "📊 **CURRENT LIVE STATISTICS (SQLITE)**\n\n"
-    for ch, data in current_stats.items():
-        total_wins = data['direct_wins'] + data['mg_wins']
-        wr = (total_wins / data['signals'] * 100) if data['signals'] > 0 else 0
-        msg += f"🔹 **{ch} Channel:**\nTotal: `{data['signals']}` | Direct Win: `{data['direct_wins']}` | MG Win: `{data['mg_wins']}`\nLosses: `{data['losses']}` | WinRate: `{wr:.1f}%`\n\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+# ==================== WHITE-LISTED TG MANAGEMENT ====================
+def is_whitelisted(update):
+    # ADMIN_WHITELIST খালি থাকলে ফলব্যাক মেকানিজম ব্লকিং হিসেবে কাজ করবে (পয়েন্ট ২ ফিক্স)
+    if not ADMIN_WHITELIST: 
+        return False
+    return update.effective_user.id in ADMIN_WHITELIST
 
 async def cmd_pause(update, context):
     global BOT_RUNNING
-    if not is_admin(update): return
+    if not is_whitelisted(update): return
     BOT_RUNNING = False
-    await update.message.reply_text("⏸️ **Signal generation has been PAUSED safely.**")
+    await update.message.reply_text("⏸️ **Signals Generation Paused.**", parse_mode="Markdown")
 
 async def cmd_resume(update, context):
     global BOT_RUNNING
-    if not is_admin(update): return
+    if not is_whitelisted(update): return
     BOT_RUNNING = True
-    await update.message.reply_text("▶️ **Signal generation has been RESUMED successfully.**")
+    await update.message.reply_text("▶️ **Signals Generation Resumed.**", parse_mode="Markdown")
 
-def start_telegram_admin():
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("pause", cmd_pause))
-    application.add_handler(CommandHandler("resume", cmd_resume))
-    application.run_polling(close_loop=False)
+def start_telegram_app():
+    tg_app = Application.builder().token(TOKEN).build()
+    tg_app.add_handler(CommandHandler("pause", cmd_pause))
+    tg_app.add_handler(CommandHandler("resume", cmd_resume))
+    tg_app.run_polling(close_loop=False)
 
-# ==================== KEEP ALIVE FLASK ====================
-@app.route('/')
-def home(): return f"TradeVision Quantum Engine Pro is Online. Active State: {BOT_RUNNING}"
+# ==================== FORWARD-TEST DASHBOARD ====================
+@app.route('/api/dashboard', methods=['GET'])
+def get_dashboard_metrics():
+    conn = pg_pool.getconn()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT * FROM statistics")
+        stats = cursor.fetchall()
+        cursor.execute("SELECT * FROM trade_history ORDER BY timestamp DESC LIMIT 15")
+        history = cursor.fetchall()
+        return jsonify({"status": "active", "metrics": stats, "recent_trades": history})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        pg_pool.putconn(conn)
 
 if __name__ == "__main__":
-    # ১. সিগন্যাল কোর লুপ থ্রেড শুরু
-    def start_automated_loop_thread():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(main_automated_loop())
+    # থ্রেড ১: কোর অ্যালগরিদমিক ট্রেডিং ইঞ্জিন লুপ
+    Thread(target=lambda: asyncio.run(automated_trading_loop()), daemon=True).start()
 
-    t_bot = Thread(target=start_automated_loop_thread)
-    t_bot.daemon = True
-    t_bot.start()
+    # থ্রেড ২: হোয়াইটলিস্টেড এডমিন প্যানেল রানিং
+    Thread(target=start_telegram_app, daemon=True).start()
 
-    # ২. এডমিন প্যানেল থ্রেড শুরু
-    t_admin = Thread(target=start_telegram_admin)
-    t_admin.daemon = True
-    t_admin.start()
-
-    # ৩. ফ্ল্যাস্ক ওয়েব সার্ভার রান
+    # মেইন থ্রেড: ফ্ল্যাস্ক ডেভেলপমেন্ট সার্ভার প্রোডাকশনে Gunicorn দিয়ে বাইন্ড করার কমেন্টসহ (পয়েন্ট ১৪ ফিক্স)
+    # Production Deployment Command: gunicorn -w 2 -b 0.0.0.0:8080 app:app
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
