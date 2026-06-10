@@ -59,13 +59,10 @@ except Exception as e:
 def get_safe_connection():
     try:
         conn = pg_pool.getconn()
-        cursor = conn.cursor(); cursor.execute("SELECT 1;"); cursor.close()
         return conn
-    except Exception:
-        global pg_pool
-        pg_pool = ThreadedConnectionPool(minconn=2, maxconn=15, dsn=DATABASE_URL)
-        return pg_pool.getconn()
-
+    except Exception as e:
+        logger.error(f"Database Error: {e}")
+        return None
 r_client = None
 try:
     r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=2)
